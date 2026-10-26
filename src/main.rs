@@ -200,12 +200,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         let active_toast = toast_message.as_ref().and_then(|(msg, inst)| {
-            if inst.elapsed() < Duration::from_millis(3500) {
+            let timeout_ms = if msg.len() > 40 {
+                3500 + ((msg.len() - 40) as u64 * 80).min(3500)
+            } else {
+                3500
+            };
+            if inst.elapsed() < Duration::from_millis(timeout_ms) {
                 Some(msg.as_str())
             } else {
                 None
             }
         });
+
+        let animation_tick = (start_time.elapsed().as_millis() / 250) as u64;
 
         terminal.draw(|f| {
             let ui_ctx = ui::UiContext {
@@ -233,6 +240,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 toast_message: active_toast,
                 audio_alerts,
                 activity_history: &activity_history,
+                animation_tick,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
