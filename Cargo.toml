@@ -13,6 +13,7 @@ serde_json = "1.0"
 chrono = "0.4"
 get_if_addrs = "0.5"
 dns-lookup = "4.0.2"
+unicode-width = "0.1"
 
 # Captura de pacotes raw para deteção de SYN scans (nmap -sS, etc.)
 # No Linux usa AF_PACKET nativo do kernel (requer CAP_NET_RAW ou sudo).

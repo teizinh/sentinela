@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 use std::collections::HashMap;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct UiContext<'a> {
     pub incidents: &'a [Incident],
@@ -32,6 +33,7 @@ pub struct UiContext<'a> {
     pub toast_message: Option<&'a str>,
     pub audio_alerts: bool,
     pub activity_history: &'a [u64],
+    pub animation_tick: u64,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -40,6 +42,79 @@ pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
     } else {
         format!("{} ", base_title.trim_end())
     }
+}
+
+/// Aplica efeito de scroll horizontal (marquee) caso o texto ultrapasse a largura visível.
+/// Quando o texto cabe perfeitamente na largura disponível, é retornado intacto.
+/// Quando excede `max_width`, o texto faz scroll automático suave (estilo Android/Termux marquee):
+/// - Pausa inicial de 6 ticks (~1.5s) para leitura estática do início
+/// - Desliza caractere a caractere (1 tick por passo) até ao fim
+/// - Pausa final de 6 ticks (~1.5s) para leitura estática do fim
+/// - Reinicia suavemente o ciclo a partir do início
+pub fn marquee_scroll(text: &str, max_width: usize, tick: u64) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let total_width = UnicodeWidthStr::width(text);
+    if total_width <= max_width {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    // Determina o índice de início máximo para o qual o sufixo ainda cabe na largura da coluna
+    let mut max_start_idx = 0;
+    for i in 0..chars.len() {
+        let suffix_width: usize = chars[i..]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(1))
+            .sum();
+        if suffix_width <= max_width {
+            max_start_idx = i;
+            break;
+        }
+    }
+    if max_start_idx == 0 {
+        max_start_idx = chars.len().saturating_sub(max_width);
+    }
+
+    // Configuração dos tempos do marquee:
+    // 6 ticks de pausa no início (~1.5s), 1 tick por caractere a deslizar, 6 ticks de pausa no fim (~1.5s)
+    let pause_start = 6;
+    let scroll_steps = max_start_idx;
+    let pause_end = 6;
+    let cycle_len = pause_start + scroll_steps + pause_end;
+
+    let step = if cycle_len > 0 {
+        (tick % cycle_len as u64) as usize
+    } else {
+        0
+    };
+
+    let start_idx = if step < pause_start {
+        0
+    } else if step < pause_start + scroll_steps {
+        step - pause_start + 1
+    } else {
+        max_start_idx
+    };
+
+    // Constrói a janela visível respeitando as larguras em colunas reais do terminal
+    let mut result = String::new();
+    let mut current_w = 0;
+    for &c in &chars[start_idx..] {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(1);
+        if current_w + cw > max_width {
+            break;
+        }
+        result.push(c);
+        current_w += cw;
+    }
+
+    result
 }
 
 pub fn extract_time_str(timestamp: &str) -> &str {
@@ -151,6 +226,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         toast_message,
         audio_alerts,
         activity_history,
+        animation_tick,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -325,7 +401,21 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         }
     };
 
-    let header_p = Paragraph::new(header_info)
+    let header_display = if is_mobile {
+        let inner_header_w = chunks[0].width.saturating_sub(2) as usize;
+        header_info
+            .lines()
+            .enumerate()
+            .map(|(line_idx, line)| {
+                marquee_scroll(line, inner_header_w, animation_tick.wrapping_add(line_idx as u64 * 3))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        header_info
+    };
+
+    let header_p = Paragraph::new(header_display)
         .style(
             Style::default()
                 .fg(status_color)
@@ -389,6 +479,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         .filter(|i| severity_filter.matches(&i.severity))
         .collect();
 
+    let table_inner_w = chunks[1].width.saturating_sub(2) as usize;
+    let ultra_target_w = table_inner_w.saturating_sub(8 + 6 + 16 + 3).max(8);
+    let compact_loc_w = table_inner_w.saturating_sub(8 + 8 + 16 + 15 + 4).max(12);
+
     let rows = filtered.iter().skip(scroll_offset).enumerate().map(|(idx, item)| {
         let is_selected_row = idx == 0;
         let is_banned = banned_ips.contains(&item.ip);
@@ -426,12 +520,6 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!(":{} ({})", item.port, item.service)
         };
 
-        let mobile_target = if item.port == 0 {
-            item.service.clone()
-        } else {
-            format!(":{}", item.port)
-        };
-
         // Indica [BAN] se banido, ou * se tiver múltiplos hits
         let ip_display = if is_banned {
             format!("{} [BAN]", item.ip)
@@ -442,21 +530,26 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         };
 
         let cells = if is_ultra_compact {
+            let ip_scrolled = marquee_scroll(&ip_display, 16, animation_tick.wrapping_add(idx as u64 * 2));
+            let target_scrolled = marquee_scroll(&target_str, ultra_target_w, animation_tick.wrapping_add(idx as u64 * 2 + 1));
             vec![
                 Cell::from(time_str),
                 Cell::from(severity_display)
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_display),
-                Cell::from(mobile_target),
+                Cell::from(ip_scrolled),
+                Cell::from(target_scrolled),
             ]
         } else if screen_width < 95 {
+            let ip_scrolled = marquee_scroll(&ip_display, 16, animation_tick.wrapping_add(idx as u64 * 2));
+            let target_scrolled = marquee_scroll(&target_str, 15, animation_tick.wrapping_add(idx as u64 * 2 + 1));
+            let loc_scrolled = marquee_scroll(&location_str, compact_loc_w, animation_tick.wrapping_add(idx as u64 * 2 + 2));
             vec![
                 Cell::from(time_str),
                 Cell::from(item.severity.as_str())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_display),
-                Cell::from(target_str),
-                Cell::from(location_str),
+                Cell::from(ip_scrolled),
+                Cell::from(target_scrolled),
+                Cell::from(loc_scrolled),
             ]
         } else {
             let hits_str = if item.hit_count > 1 {
@@ -545,7 +638,14 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         Style::default().fg(Color::Cyan)
     };
 
-    let footer = Paragraph::new(footer_text)
+    let footer_inner_w = chunks[2].width.saturating_sub(2) as usize;
+    let displayed_footer = if is_mobile || toast_message.is_some() {
+        marquee_scroll(&footer_text, footer_inner_w, animation_tick)
+    } else {
+        footer_text
+    };
+
+    let footer = Paragraph::new(displayed_footer)
         .style(footer_style)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(footer, chunks[2]);
@@ -990,5 +1090,52 @@ mod tests {
         assert!(mobile.contains(env!("CARGO_PKG_VERSION")));
         assert!(desktop.contains("SOC"));
         assert!(desktop.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn test_marquee_scroll_fits() {
+        let text = "Curto";
+        assert_eq!(marquee_scroll(text, 10, 0), "Curto");
+        assert_eq!(marquee_scroll(text, 10, 5), "Curto");
+        assert_eq!(marquee_scroll(text, 10, 20), "Curto");
+    }
+
+    #[test]
+    fn test_marquee_scroll_empty_and_zero() {
+        assert_eq!(marquee_scroll("", 10, 0), "");
+        assert_eq!(marquee_scroll("Texto", 0, 0), "");
+    }
+
+    #[test]
+    fn test_marquee_scroll_overflow_phases() {
+        let text = "ABCDEFGHIJ"; // 10 chars, max_width = 6 -> overflow = 4 (indices 0..=4)
+        // pause_start = 6 (ticks 0..5) -> start_idx = 0 -> "ABCDEF"
+        assert_eq!(marquee_scroll(text, 6, 0), "ABCDEF");
+        assert_eq!(marquee_scroll(text, 6, 5), "ABCDEF");
+
+        // scroll phase: 4 steps
+        // tick 6 -> start_idx = 1 -> "BCDEFG"
+        assert_eq!(marquee_scroll(text, 6, 6), "BCDEFG");
+        // tick 7 -> start_idx = 2 -> "CDEFGH"
+        assert_eq!(marquee_scroll(text, 6, 7), "CDEFGH");
+        // tick 8 -> start_idx = 3 -> "DEFGHI"
+        assert_eq!(marquee_scroll(text, 6, 8), "DEFGHI");
+        // tick 9 -> start_idx = 4 -> "EFGHIJ"
+        assert_eq!(marquee_scroll(text, 6, 9), "EFGHIJ");
+
+        // pause_end = 6 (ticks 10..15) -> start_idx = 4 -> "EFGHIJ"
+        assert_eq!(marquee_scroll(text, 6, 10), "EFGHIJ");
+        assert_eq!(marquee_scroll(text, 6, 15), "EFGHIJ");
+
+        // tick 16 -> ciclo reinicia -> start_idx = 0 -> "ABCDEF"
+        assert_eq!(marquee_scroll(text, 6, 16), "ABCDEF");
+    }
+
+    #[test]
+    fn test_marquee_scroll_unicode_accents() {
+        let text = "Porta 8080 (Serviço Web)";
+        let scrolled = marquee_scroll(text, 15, 0);
+        assert_eq!(scrolled.chars().count(), 15);
+        assert!(text.starts_with(&scrolled));
     }
 }
