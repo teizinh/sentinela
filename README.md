@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.3-green.svg" alt="Version 0.3.3">
+  <img src="https://img.shields.io/badge/Version-0.3.4-green.svg" alt="Version 0.3.4">
 </p>
 
 ---
@@ -62,11 +62,31 @@ sentinela 22 3306 5432 9200
 ### Emergency killswitch
 Press `k` to drop all network traffic instantly. On Linux this inserts blocking rules into `iptables`/`ip6tables` and calls `rfkill block all`. Press `k` again to restore everything. If Sentinela exits while the killswitch is active, it cleans up automatically.
 
-### Deep incident forensic inspection & reverse DNS
-Press `Enter` on any highlighted incident to open a full forensic modal showing detailed telemetry: source IP, async Reverse DNS (rDNS / PTR hostname), threat severity, hit counts, geolocation (country and city), ISP entity, target port, captured payload/banner, and recommended mitigation command.
+### Deep incident forensic inspection, reverse DNS & MITRE ATT&CK mapping
+Press `Enter` on any highlighted incident to open a full forensic modal showing detailed SOC telemetry:
+- **MITRE ATT&CK Enterprise Matrix:** Automatically classifies probes into techniques (e.g., `T1046: Network Service Discovery`, `T1110.001: Brute Force Password Guessing`, `T1190: Exploit Public-Facing Application`, `T1210: Exploitation of Remote Services`, `T1021: Remote Services`).
+- **Forensic Hexdump Viewer:** Displays captured packet headers and payload bytes in canonical `xxd` / Wireshark hexdump formatting.
+- **Network Telemetry:** Async Reverse DNS (PTR), Geolocation (with detailed RFC 1918 / RFC 6598 CGNAT local subnet classification), ISP entity, target port, Threat Score, and firewall remediation command.
 
-### Honeypot payload & banner sniffing
-When an attacker connects to an active honeypot port, Sentinela asynchronously reads the initial bytes (HTTP paths like `GET /admin`, SSH client identification strings, Redis probes, or raw exploit payloads) without blocking the accept loop. Payloads are sanitized and displayed inside the inspection modal and saved into exported reports.
+### Trusted IP whitelisting
+Manage a local whitelist of trusted IP addresses (gateways, internal scanners, management workstations) that are immune to auto-ban. Press `u` in the dashboard or forensic modal to add or remove an IP. You can also supply initial whitelisted addresses via `--whitelist <IP1,IP2>` or the `SENTINELA_WHITELIST` environment variable. Whitelisted addresses are rendered with a distinct green `[OK]` badge.
+
+### Interactive honeypot protocol emulation & banner sniffing
+When an attacker connects to an active honeypot port, Sentinela dynamically interacts using authentic protocol handshakes:
+- **SSH (22/2222):** Transmits standard OpenSSH banner (`SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6`), capturing scanner identities and tool strings (e.g. libssh, PuTTY, Nmap NSE).
+- **FTP (21/2121):** Emulates vsFTPd, accepts anonymous or named users and prompts for credentials, logging captured authentication attempts.
+- **Telnet (23/2323):** Displays authentic Debian login prompt and captures user inputs.
+- **SMTP (25):** Emulates Postfix ESMTP server and captures `HELO`/`EHLO` probes.
+- **HTTP (80/8080):** Returns authentic `401 Unauthorized` responses with Nginx server headers and Basic Auth prompts to lure automated path discovery bots.
+- **Redis (6379):** Simulates protected mode with `-NOAUTH Authentication required.`.
+
+Captured banners and payloads are sanitized, displayed in the forensic modal, and included in threat reports.
+
+### Automated threat auto-ban
+Toggle automated firewall enforcement with `x` in the dashboard or launch with `--auto-ban`. Sentinela continuously evaluates attacker risk based on port sensitivity, payload signatures, and frequency. Any address reaching a **Threat Score ≥ 80** or performing a port sweep is instantaneously blocked at the firewall level (`DROP`). Built-in loopback and local subnet whitelisting prevents self-lockout. Temporary bans are cleanly removed on exit.
+
+### Real-time Discord / Slack webhook dispatcher
+Launch with `--webhook <URL>` or set the `SENTINELA_WEBHOOK` environment variable to stream critical threat detections and auto-ban events straight to your security operations Discord or Slack channel with rich color-coded embed payloads and zero terminal UI latency.
 
 ### Real-time traffic pulse & sparkline
 On wider terminal screens, Sentinela renders a live unicode `Sparkline` graph in the header displaying attack intensity and frequency over rolling 24-second windows.
@@ -124,6 +144,8 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 | `q` / `Ctrl+C` | Exit (cleans up any active killswitch and temporary bans) |
 | `Enter` | Open deep forensic inspection modal for selected incident |
 | `b` | Surgically ban / unban selected attacker IP (DROP firewall rule) |
+| `u` | Add / remove selected IP to/from trusted whitelist (immune to auto-ban) |
+| `x` | Toggle automated firewall auto-ban for high-threat IPs (Threat Score ≥ 80) |
 | `e` | Export session Threat Intel report to JSON and CSV |
 | `a` | Toggle audio bell alarm and desktop notifications |
 | `i` | Open / close help modal |
@@ -204,6 +226,10 @@ The killswitch also needs `CAP_NET_ADMIN` (or root) to insert `iptables` rules. 
 |---|---|---|
 | Honeypot traps | ✓ | ✓ |
 | Raw scan detection | ✓ | — |
+| Auto-Ban firewall rules | ✓ (iptables) | ✓ (netsh) |
+| Trusted Whitelisting | ✓ | ✓ |
+| MITRE ATT&CK Mapping | ✓ | ✓ |
+| Webhook alerts | ✓ | ✓ |
 | Killswitch | ✓ (iptables + rfkill) | ✓ (PowerShell) |
 | Desktop notifications | ✓ (notify-send) | ✓ (PowerShell) |
 | GeoIP lookup | ✓ | ✓ |
