@@ -152,6 +152,151 @@ pub async fn log_incident_to_disk(incident: &Incident) {
     log_incidents_to_disk(std::slice::from_ref(incident)).await;
 }
 
+/// Sanitiza uma sequência de bytes convertendo caracteres imprimíveis para texto legível.
+pub fn sanitize_bytes(bytes: &[u8]) -> String {
+    let sanitized: String = bytes
+        .iter()
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else if b == b'\r' || b == b'\n' {
+                ' '
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    let clean = sanitized.trim();
+    clean.chars().take(120).collect()
+}
+
+/// Simula diálogos de protocolos em portas comuns para atrair e capturar payloads e assinaturas dos atacantes.
+pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::{timeout, Duration};
+
+    let mut buf = [0u8; 512];
+
+    match port {
+        22 | 2222 => {
+            // SSH (RFC 4253): O servidor transmite primeiro a identificação do protocolo
+            let banner = b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6\r\n";
+            let _ = socket.write_all(banner).await;
+            let _ = socket.flush().await;
+
+            // Aguarda a resposta do cliente SSH (ex.: "SSH-2.0-libssh_0.9.0", PuTTY, Nmap NSE)
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(500), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let client_id = sanitize_bytes(&buf[..n]);
+                    if !client_id.is_empty() {
+                        return Some(format!("SSH: {}", client_id));
+                    }
+                }
+            }
+            Some("SSH: handshake iniciado".to_string())
+        }
+        21 | 2121 => {
+            // FTP: Servidor envia banner 220 de boas-vindas
+            let banner = b"220 (vsFTPd 3.0.5 ready)\r\n";
+            let _ = socket.write_all(banner).await;
+            let _ = socket.flush().await;
+
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(500), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let cmd = sanitize_bytes(&buf[..n]);
+                    if cmd.to_uppercase().starts_with("USER") {
+                        let _ = socket.write_all(b"331 Please specify the password.\r\n").await;
+                        let _ = socket.flush().await;
+                        let mut pass_buf = [0u8; 256];
+                        if let Ok(Ok(pn)) = timeout(Duration::from_millis(500), socket.read(&mut pass_buf)).await {
+                            if pn > 0 {
+                                let pass_cmd = sanitize_bytes(&pass_buf[..pn]);
+                                let _ = socket.write_all(b"530 Login incorrect.\r\n").await;
+                                return Some(format!("FTP: {} | {}", cmd, pass_cmd));
+                            }
+                        }
+                    }
+                    return Some(format!("FTP: {}", cmd));
+                }
+            }
+            Some("FTP: banner enviado".to_string())
+        }
+        23 | 2323 => {
+            // Telnet: Envia prompt de login realista
+            let banner = b"\r\nDebian GNU/Linux 12\r\nlogin: ";
+            let _ = socket.write_all(banner).await;
+            let _ = socket.flush().await;
+
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(500), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let login = sanitize_bytes(&buf[..n]);
+                    if !login.is_empty() {
+                        return Some(format!("Telnet: login '{}'", login));
+                    }
+                }
+            }
+            Some("Telnet: prompt enviado".to_string())
+        }
+        25 => {
+            // SMTP: Envia banner 220 de servidor de e-mail
+            let banner = b"220 mail.internal ESMTP Postfix\r\n";
+            let _ = socket.write_all(banner).await;
+            let _ = socket.flush().await;
+
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(500), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let cmd = sanitize_bytes(&buf[..n]);
+                    if !cmd.is_empty() {
+                        return Some(format!("SMTP: {}", cmd));
+                    }
+                }
+            }
+            Some("SMTP: banner enviado".to_string())
+        }
+        80 | 8080 => {
+            // HTTP: O cliente fala primeiro (GET/POST). Lemos o pedido e respondemos 401 Unauthorized
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let req = sanitize_bytes(&buf[..n]);
+                    let resp = b"HTTP/1.1 401 Unauthorized\r\nServer: nginx/1.18.0\r\nContent-Type: text/plain; charset=utf-8\r\nWWW-Authenticate: Basic realm=\"Restricted\"\r\nContent-Length: 17\r\nConnection: close\r\n\r\n401 Unauthorized\n";
+                    let _ = socket.write_all(resp).await;
+                    let _ = socket.flush().await;
+                    if !req.is_empty() {
+                        return Some(format!("HTTP: {}", req));
+                    }
+                }
+            }
+            None
+        }
+        6379 => {
+            // Redis: Lemos comandos como PING/INFO e avisamos que requer autenticação
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let cmd = sanitize_bytes(&buf[..n]);
+                    let _ = socket.write_all(b"-NOAUTH Authentication required.\r\n").await;
+                    let _ = socket.flush().await;
+                    if !cmd.is_empty() {
+                        return Some(format!("Redis: {}", cmd));
+                    }
+                }
+            }
+            None
+        }
+        _ => {
+            // Outras portas: Tenta ler o que o atacante enviar nos primeiros 300ms
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(300), socket.read(&mut buf)).await {
+                if n > 0 {
+                    let clean = sanitize_bytes(&buf[..n]);
+                    if !clean.is_empty() {
+                        return Some(clean);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Inicia armadilhas TCP nas portas fornecidas.
 /// Devolve (portas_ativas, portas_com_erro).
 pub async fn start_traps(
@@ -207,7 +352,7 @@ pub async fn start_traps(
                 tokio::spawn(async move {
                     loop {
                         match listener.accept().await {
-                            Ok((mut socket, peer_addr)) => {
+                            Ok((socket, peer_addr)) => {
                                 // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
                                 let attacker_ip = match peer_addr.ip() {
                                     std::net::IpAddr::V6(v6) => v6
@@ -225,38 +370,9 @@ pub async fn start_traps(
                                 let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                                 let q_tx_clone = q_tx.clone();
 
-                                // Lê os primeiros bytes com timeout rápido (300ms) para capturar banners / payloads HTTP / SSH
+                                // Trata a conexão e executa o diálogo interativo do protocolo da porta
                                 tokio::spawn(async move {
-                                    use tokio::io::AsyncReadExt;
-                                    let mut buf = [0u8; 512];
-                                    let payload = match tokio::time::timeout(
-                                        tokio::time::Duration::from_millis(300),
-                                        socket.read(&mut buf),
-                                    )
-                                    .await
-                                    {
-                                        Ok(Ok(n)) if n > 0 => {
-                                            let sanitized: String = buf[..n]
-                                                .iter()
-                                                .map(|&b| {
-                                                    if b.is_ascii_graphic() || b == b' ' {
-                                                        b as char
-                                                    } else if b == b'\r' || b == b'\n' {
-                                                        ' '
-                                                    } else {
-                                                        '.'
-                                                    }
-                                                })
-                                                .collect();
-                                            let clean = sanitized.trim();
-                                            if !clean.is_empty() {
-                                                Some(clean.chars().take(120).collect())
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        _ => None,
-                                    };
+                                    let payload = interact_with_probe(socket, port).await;
 
                                     let _ = q_tx_clone.send(TrapConnection {
                                         attacker_ip,
@@ -347,5 +463,12 @@ mod tests {
         let name = get_log_filename();
         assert!(name.starts_with("sentinela_"));
         assert!(name.ends_with(".log"));
+    }
+
+    #[test]
+    fn test_sanitize_bytes() {
+        assert_eq!(sanitize_bytes(b"GET /admin HTTP/1.1\r\nHost: local\r\n"), "GET /admin HTTP/1.1  Host: local");
+        assert_eq!(sanitize_bytes(&[0x00, 0x01, b'A', b'B', 0xFF]), "..AB.");
+        assert_eq!(sanitize_bytes(b"   "), "");
     }
 }

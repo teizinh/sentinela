@@ -30,8 +30,11 @@ pub struct UiContext<'a> {
     pub selected_incident: Option<&'a Incident>,
     pub show_incident_modal: bool,
     pub banned_ips: &'a std::collections::HashSet<String>,
+    pub whitelisted_ips: &'a std::collections::HashSet<String>,
     pub toast_message: Option<&'a str>,
     pub audio_alerts: bool,
+    pub auto_ban: bool,
+    pub webhook_active: bool,
     pub activity_history: &'a [u64],
     pub animation_tick: u64,
 }
@@ -223,8 +226,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         selected_incident,
         show_incident_modal,
         banned_ips,
+        whitelisted_ips,
         toast_message,
         audio_alerts,
+        auto_ban,
+        webhook_active,
         activity_history,
         animation_tick,
     } = *ctx;
@@ -354,6 +360,26 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         local_ips
     };
 
+    let auto_ban_badge = if auto_ban {
+        match lang {
+            Language::Pt => "Auto-Ban: [ON]",
+            Language::En => "Auto-Ban: [ON]",
+        }
+    } else {
+        match lang {
+            Language::Pt => "Auto-Ban: [OFF]",
+            Language::En => "Auto-Ban: [OFF]",
+        }
+    };
+    let webhook_badge = if webhook_active {
+        match lang {
+            Language::Pt => " | Webhook: [ON]",
+            Language::En => " | Webhook: [ON]",
+        }
+    } else {
+        ""
+    };
+
     let header_info = if screen_height < 18 {
         format!(
             " {} | IPs: {} | C:{} M:{} S:{}",
@@ -362,10 +388,12 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     } else if is_mobile {
         match lang {
             Language::Pt => format!(
-                " Estado: {} | {} | {}\n IPs: {} | C:{} M:{} A:{} S:{} | +Vis: {}",
+                " Estado: {} | {} | {} | {}{}\n IPs: {} | C:{} M:{} A:{} S:{} | +Vis: {}",
                 status_label,
                 traps_status,
                 scanner_label,
+                auto_ban_badge,
+                webhook_badge,
                 local_ips_compact,
                 crit,
                 med,
@@ -374,10 +402,12 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 top_port
             ),
             Language::En => format!(
-                " Status: {} | {} | {}\n IPs: {} | C:{} M:{} A:{} S:{} | Top: {}",
+                " Status: {} | {} | {} | {}{}\n IPs: {} | C:{} M:{} A:{} S:{} | Top: {}",
                 status_label,
                 traps_status,
                 scanner_label,
+                auto_ban_badge,
+                webhook_badge,
                 local_ips_compact,
                 crit,
                 med,
@@ -389,13 +419,13 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     } else {
         match lang {
             Language::Pt => format!(
-                " IPs: {} | Log: {}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
-                local_ips, log_name, status_label, traps_status, scanner_label,
+                " IPs: {} | Log: {} | {}{}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
+                local_ips, log_name, auto_ban_badge, webhook_badge, status_label, traps_status, scanner_label,
                 crit, med, alrt, scans, filter_label, top_port
             ),
             Language::En => format!(
-                " IPs: {} | Log: {}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
-                local_ips, log_name, status_label, traps_status, scanner_label,
+                " IPs: {} | Log: {} | {}{}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
+                local_ips, log_name, auto_ban_badge, webhook_badge, status_label, traps_status, scanner_label,
                 crit, med, alrt, scans, filter_label, top_port
             ),
         }
@@ -486,6 +516,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     let rows = filtered.iter().skip(scroll_offset).enumerate().map(|(idx, item)| {
         let is_selected_row = idx == 0;
         let is_banned = banned_ips.contains(&item.ip);
+        let is_whitelisted = whitelisted_ips.contains(&item.ip);
 
         let risk_color = match item.severity.as_str() {
             "CRÍTICO" => Color::Red,
@@ -520,13 +551,23 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!(":{} ({})", item.port, item.service)
         };
 
-        // Indica [BAN] se banido, ou * se tiver múltiplos hits
+        // Indica [BAN] se banido, [OK] se na whitelist, ou * se tiver múltiplos hits
         let ip_display = if is_banned {
             format!("{} [BAN]", item.ip)
+        } else if is_whitelisted {
+            format!("{} [OK]", item.ip)
         } else if item.hit_count > 1 {
             format!("{}*", item.ip)
         } else {
             item.ip.clone()
+        };
+
+        let ip_style = if is_banned {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else if is_whitelisted {
+            Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
         };
 
         let cells = if is_ultra_compact {
@@ -536,7 +577,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 Cell::from(time_str),
                 Cell::from(severity_display)
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_scrolled),
+                Cell::from(ip_scrolled).style(ip_style),
                 Cell::from(target_scrolled),
             ]
         } else if screen_width < 95 {
@@ -547,7 +588,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 Cell::from(time_str),
                 Cell::from(item.severity.as_str())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_scrolled),
+                Cell::from(ip_scrolled).style(ip_style),
                 Cell::from(target_scrolled),
                 Cell::from(loc_scrolled),
             ]
@@ -561,7 +602,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 Cell::from(item.timestamp.as_str()),
                 Cell::from(item.severity.as_str())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_display),
+                Cell::from(ip_display).style(ip_style),
                 Cell::from(hits_str).style(Style::default().fg(if item.hit_count > 1 {
                     Color::Magenta
                 } else {
@@ -617,18 +658,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         toast.to_string()
     } else if screen_width < 60 {
         match lang {
-            Language::Pt => " [↵]Raio-X [B]Ban [E]Export [Q]Sair [K]Kill".to_string(),
-            Language::En => " [↵]Inspect [B]Ban [E]Export [Q]Quit [K]Kill".to_string(),
+            Language::Pt => " [↵]Raio-X [B]Ban [U]White [X]Auto [E]Export [Q]Sair".to_string(),
+            Language::En => " [↵]Inspect [B]Ban [U]White [X]Auto [E]Export [Q]Quit".to_string(),
         }
     } else if screen_width < 90 {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Banir IP | [E] Exportar | [K] Kill | [W] Avisos | [I] Ajuda | [Q] Sair".to_string(),
-            Language::En => " [↵] Inspect | [B] Ban IP | [E] Export | [K] Kill | [W] Warn | [I] Help | [Q] Quit".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Ban | [U] Whitelist | [X] Auto | [E] Exportar | [K] Kill | [W] Avisos | [I] Ajuda | [Q] Sair".to_string(),
+            Language::En => " [↵] Inspect | [B] Ban | [U] Whitelist | [X] Auto | [E] Export | [K] Kill | [W] Warn | [I] Help | [Q] Quit".to_string(),
         }
     } else {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Banir IP | [E] Exportar | [A] Alertas | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [Q] Sair ".to_string(),
-            Language::En => " [↵] Deep Inspection | [B] Ban IP | [E] Export | [A] Alerts | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [Q] Quit ".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Banir IP | [U] Whitelist | [X] Auto-Ban | [E] Exportar | [A] Alertas | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [Q] Sair ".to_string(),
+            Language::En => " [↵] Deep Inspection | [B] Ban IP | [U] Whitelist | [X] Auto-Ban | [E] Export | [A] Alerts | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [Q] Quit ".to_string(),
         }
     };
 
@@ -747,6 +788,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
                        [↵]   Raio-X: Inspeção forense aprofundada do incidente selecionado.\n\
                        [B]   Banir/Desbanir: Bloqueio cirúrgico no firewall (DROP).\n\
+                      [X]   Auto-Ban: Alterna bloqueio automatico de ameacas (Score >= 80).\n\
+                      [U]   Whitelist: Adiciona/Remove IP da lista de confianca (imune a auto-ban).\n\
                        [E]   Exportar: Exporta Threat Intel completa da sessão (JSON + CSV).\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                        [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
@@ -783,6 +826,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
                        [↵]   Forensic X-Ray: Deep inspection modal of selected incident.\n\
                        [B]   Ban/Unban: Surgical firewall drop rule for attacker IP.\n\
+                      [X]   Auto-Ban: Toggle automated blocking of high-threat IPs (Score >= 80).\n\
+                      [U]   Whitelist: Add/Remove IP from trusted whitelist (immune to auto-ban).\n\
                        [E]   Export: Dump Threat Intel session report to JSON and CSV.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                        [W]   Warnings: Checks risky listening ports and fix commands.\n\
@@ -829,10 +874,16 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             f.render_widget(Clear, area);
 
             let is_banned = banned_ips.contains(&inc.ip);
+            let is_whitelisted = whitelisted_ips.contains(&inc.ip);
             let ban_status = if is_banned {
                 match lang {
                     Language::Pt => "🛑 BLOQUEADO (DROP ativo no firewall)",
                     Language::En => "🛑 BANNED (DROP rule active on firewall)",
+                }
+            } else if is_whitelisted {
+                match lang {
+                    Language::Pt => "🛡️ CONFIÁVEL (IP na Whitelist - imune a auto-ban)",
+                    Language::En => "🛡️ TRUSTED (Whitelisted IP - immune to auto-ban)",
                 }
             } else {
                 match lang {
@@ -871,6 +922,23 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 },
             };
 
+            let hexdump_section = match &inc.payload {
+                Some(p) => {
+                    let dump = crate::models::format_hexdump(p);
+                    if !dump.is_empty() {
+                        match lang {
+                            Language::Pt => format!("\n • Hexdump Forense:\n{}\n", dump),
+                            Language::En => format!("\n • Forensic Hexdump:\n{}\n", dump),
+                        }
+                    } else {
+                        String::new()
+                    }
+                }
+                None => String::new(),
+            };
+
+            let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+
             let threat_level_label = if inc.threat_score >= 80 {
                 match lang { Language::Pt => "CRÍTICO / IMINENTE", Language::En => "CRITICAL / IMMINENT" }
             } else if inc.threat_score >= 60 {
@@ -892,11 +960,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • Threat Score (0-100):{}/100 [{}]\n\
                      • Vezes Visto (Hits):  {} conexão(ões)\n\
                      • Carimbo de Data/Hora:{}\n\n\
+                     QUADRO MITRE ATT&CK:\n\
+                     • Técnica:             {} ({})\n\
+                     • Tática Associada:    {}\n\
+                     • Documentação:        {}\n\n\
                      PAYLOAD & ASSINATURA CAPTURADA:\n\
-                     • Dados / Banner:      {}\n\n\
+                     • Dados / Banner:      {}{}\n\
                      GEOLOCALIZAÇÃO & REDE:\n\
                      • País:                {}\n\
-                     • Cidade:              {}\n\
+                     • Sub-rede / Cidade:   {}\n\
                      • Fornecedor / ISP:    {}\n\n\
                      ALVO NA MÁQUINA LOCAL:\n\
                      • Serviço / Porta:     {}\n\n\
@@ -905,6 +977,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        {}\n\n\
                      AÇÕES DISPONÍVEIS:\n\
                      [B]   {} este IP no firewall\n\
+                     [U]   {} este IP na Whitelist (imune a auto-ban)\n\
                      [E]   Exportar relatório completo da sessão (JSON/CSV)\n\
                      [ESC / Enter] Fechar e regressar ao painel",
                     inc.ip,
@@ -915,13 +988,19 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     threat_level_label,
                     inc.hit_count,
                     inc.timestamp,
+                    mitre.id,
+                    mitre.name,
+                    mitre.tactic,
+                    mitre.url,
                     payload_display,
+                    hexdump_section,
                     inc.country,
                     if inc.city.is_empty() { "N/D" } else { &inc.city },
                     inc.isp,
                     target_str,
                     quick_firewall,
                     if is_banned { "Desbloquear / Desbanir" } else { "BLOQUEAR / BANIR" },
+                    if is_whitelisted { "Remover" } else { "Adicionar" },
                 ),
                 Language::En => format!(
                     "ATTACKER PROFILE & TELEMETRY\n\
@@ -933,11 +1012,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • Threat Score (0-100):{}/100 [{}]\n\
                      • Probe Count (Hits):  {} connection(s)\n\
                      • Event Timestamp:     {}\n\n\
+                     MITRE ATT&CK FRAMEWORK:\n\
+                     • Technique:           {} ({})\n\
+                     • Associated Tactic:   {}\n\
+                     • Documentation:       {}\n\n\
                      CAPTURED PAYLOAD & APPLICATION BANNER:\n\
-                     • Raw Data / Banner:   {}\n\n\
+                     • Raw Data / Banner:   {}{}\n\
                      GEOLOCATION & NETWORK METADATA:\n\
                      • Country:             {}\n\
-                     • City:                {}\n\
+                     • Subnet / City:       {}\n\
                      • ISP / AS Entity:     {}\n\n\
                      TARGETED LOCAL SERVICE:\n\
                      • Host Target:         {}\n\n\
@@ -946,6 +1029,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        {}\n\n\
                      ACTIONS:\n\
                      [B]   {} this attacker IP\n\
+                     [U]   {} this IP to/from Whitelist\n\
                      [E]   Export full session threat report (JSON/CSV)\n\
                      [ESC / Enter] Close modal and return",
                     inc.ip,
@@ -956,13 +1040,19 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     threat_level_label,
                     inc.hit_count,
                     inc.timestamp,
+                    mitre.id,
+                    mitre.name,
+                    mitre.tactic,
+                    mitre.url,
                     payload_display,
+                    hexdump_section,
                     inc.country,
                     if inc.city.is_empty() { "N/A" } else { &inc.city },
                     inc.isp,
                     target_str,
                     quick_firewall,
                     if is_banned { "Unban / Allow" } else { "BAN / BLOCK" },
+                    if is_whitelisted { "Remove" } else { "Add" },
                 ),
             };
 

@@ -273,23 +273,49 @@ pub fn is_private_or_local(ip: IpAddr) -> bool {
     }
 }
 
+/// Classifica sub-redes locais e privadas (RFC 1918, RFC 6598, Link-Local) com detalhe
+pub fn classify_local_ip(ip: IpAddr) -> (String, String, String) {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            if v4.is_loopback() {
+                ("Loopback".to_string(), "".to_string(), "Host Interno (127.0.0.1)".to_string())
+            } else if octets[0] == 10 {
+                ("Rede Privada".to_string(), "Classe A (10.0.0.0/8)".to_string(), "Intranet Corporativa / Lab".to_string())
+            } else if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+                ("Rede Privada".to_string(), "Classe B (172.16.0.0/12)".to_string(), "Sub-rede / Docker / VPN".to_string())
+            } else if octets[0] == 192 && octets[1] == 168 {
+                ("Rede Local (LAN)".to_string(), "Classe C (192.168.0.0/16)".to_string(), "Router / Dispositivo LAN".to_string())
+            } else if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                ("CGNAT (RFC 6598)".to_string(), "100.64.0.0/10".to_string(), "Operadora ISP Compartilhada".to_string())
+            } else if octets[0] == 169 && octets[1] == 254 {
+                ("Link-Local (APIPA)".to_string(), "169.254.0.0/16".to_string(), "Autoconfiguração de Rede".to_string())
+            } else {
+                ("Rede Local (LAN)".to_string(), "".to_string(), "Dispositivo Interno".to_string())
+            }
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                ("Loopback (IPv6)".to_string(), "".to_string(), "Host Interno (::1)".to_string())
+            } else {
+                let segments = v6.segments();
+                if (segments[0] & 0xffc0) == 0xfe80 {
+                    ("Link-Local (IPv6)".to_string(), "fe80::/10".to_string(), "Interface Local".to_string())
+                } else if (segments[0] & 0xfe00) == 0xfc00 {
+                    ("Rede Local Única (ULA)".to_string(), "fc00::/7".to_string(), "Intranet IPv6 Privada".to_string())
+                } else {
+                    ("Rede Local (LAN)".to_string(), "".to_string(), "Dispositivo Interno".to_string())
+                }
+            }
+        }
+    }
+}
+
 /// Devolve (country, city, isp) para o IP fornecido.
 /// Usa cache em memória com TTL de 2 minutos para falhas para permitir novas tentativas.
 pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
-    if ip.is_loopback() {
-        return (
-            "Loopback".to_string(),
-            "".to_string(),
-            "Host Interno".to_string(),
-        );
-    }
-
-    if is_private_or_local(ip) {
-        return (
-            "Rede Local (LAN)".to_string(),
-            "".to_string(),
-            "Dispositivo Interno".to_string(),
-        );
+    if ip.is_loopback() || is_private_or_local(ip) {
+        return classify_local_ip(ip);
     }
 
     // 1. Verifica cache em memória primeiro (respeitando TTL para entradas negativas)
@@ -534,6 +560,7 @@ pub fn unban_ip(_ip: &str) -> Result<(), String> {
 pub fn export_threat_report(
     incidents: &[Incident],
     banned_ips: &std::collections::HashSet<String>,
+    whitelisted_ips: &std::collections::HashSet<String>,
     sys_info: &SysInfo,
     _lang: Language,
 ) -> Result<(String, String), String> {
@@ -549,6 +576,7 @@ pub fn export_threat_report(
         total_incidents: usize,
         unique_attackers: usize,
         banned_ips: Vec<&'a String>,
+        whitelisted_ips: Vec<&'a String>,
         system_info: &'a SysInfo,
         incidents: &'a [Incident],
     }
@@ -564,6 +592,7 @@ pub fn export_threat_report(
         total_incidents: incidents.len(),
         unique_attackers: unique_ips.len(),
         banned_ips: banned_ips.iter().collect(),
+        whitelisted_ips: whitelisted_ips.iter().collect(),
         system_info: sys_info,
         incidents,
     };
@@ -571,31 +600,96 @@ pub fn export_threat_report(
     let json_content = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&json_name, json_content).map_err(|e| format!("Erro ao gravar JSON: {}", e))?;
 
-    let mut csv = String::from("Timestamp,IP,Port,Service,Severity,Score,Country,City,ISP,rDNS,Payload,Hits,Banned\n");
+    let mut csv = String::from("Timestamp,IP,Port,Service,Severity,Score,MitreID,MitreTactic,Country,City,ISP,rDNS,Payload,Hits,Banned,Whitelisted\n");
     for inc in incidents {
         let is_banned = if banned_ips.contains(&inc.ip) { "SIM" } else { "NAO" };
+        let is_white = if whitelisted_ips.contains(&inc.ip) { "SIM" } else { "NAO" };
+        let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
         let rdns = inc.rdns.as_deref().unwrap_or("");
         let payload = inc.payload.as_deref().unwrap_or("");
         csv.push_str(&format!(
-            "\"{}\",\"{}\",{},\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\"\n",
+            "\"{}\",\"{}\",{},\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\",\"{}\"\n",
             inc.timestamp,
             inc.ip,
             inc.port,
             inc.service,
             inc.severity,
             inc.threat_score,
+            mitre.id,
+            mitre.tactic.replace('"', "\"\""),
             inc.country,
             inc.city,
             inc.isp.replace('"', "\"\""),
             rdns.replace('"', "\"\""),
             payload.replace('"', "\"\""),
             inc.hit_count,
-            is_banned
+            is_banned,
+            is_white
         ));
     }
     std::fs::write(&csv_name, csv).map_err(|e| format!("Erro ao gravar CSV: {}", e))?;
 
     Ok((json_name, csv_name))
+}
+
+/// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
+pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned: bool) {
+    let url = webhook_url.trim().to_string();
+    if url.is_empty() {
+        return;
+    }
+
+    let inc = incident.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build();
+
+        if let Ok(client) = client {
+            let title = if is_auto_banned {
+                format!("🛑 [SENTINELA AUTO-BAN] Ameaça Bloqueada: {}", inc.ip)
+            } else {
+                format!("🚨 [SENTINELA ALERTA] Deteção {}: {}", inc.severity, inc.ip)
+            };
+
+            let color = match inc.severity.as_str() {
+                "CRÍTICO" => 0xE74C3C, // Vermelho vivo
+                "SWEEP" => 0xE67E22,   // Laranja
+                "MÉDIO" => 0xF1C40F,   // Amarelo
+                _ => 0x3498DB,         // Azul
+            };
+
+            let payload_str = inc.payload.as_deref().unwrap_or("Nenhum");
+            let location_str = if inc.city.is_empty() || inc.city == "?" {
+                inc.country.clone()
+            } else {
+                format!("{}, {}", inc.city, inc.country)
+            };
+
+            // Payload padrão com embeds para Discord/Slack/Mattermost
+            let body = serde_json::json!({
+                "username": "Sentinela SOC",
+                "embeds": [{
+                    "title": title,
+                    "color": color,
+                    "fields": [
+                        {"name": "IP Origem", "value": inc.ip, "inline": true},
+                        {"name": "Localização", "value": location_str, "inline": true},
+                        {"name": "Alvo", "value": format!("Porta {} ({})", inc.port, inc.service), "inline": true},
+                        {"name": "Threat Score", "value": format!("{}/100", inc.threat_score), "inline": true},
+                        {"name": "Hits Sessão", "value": inc.hit_count.to_string(), "inline": true},
+                        {"name": "ISP / Rede", "value": inc.isp, "inline": true},
+                        {"name": "Payload Capturado", "value": format!("`{}`", payload_str), "inline": false}
+                    ],
+                    "footer": {
+                        "text": format!("Sentinela v{} • {}", env!("CARGO_PKG_VERSION"), inc.timestamp)
+                    }
+                }]
+            });
+
+            let _ = client.post(&url).json(&body).send().await;
+        }
+    });
 }
 
 /// Altera o estado da rede (isolamento / restauro).
@@ -1290,6 +1384,21 @@ mod tests {
         assert!(!is_private_or_local(pub_v6));
     }
 
+    #[test]
+    fn test_classify_local_ip() {
+        let (country, city, isp) = classify_local_ip("192.168.1.100".parse().unwrap());
+        assert_eq!(country, "Rede Local (LAN)");
+        assert!(city.contains("Classe C"));
+        assert!(isp.contains("Router"));
+
+        let (country, city, _) = classify_local_ip("10.10.5.1".parse().unwrap());
+        assert_eq!(country, "Rede Privada");
+        assert!(city.contains("Classe A"));
+
+        let (country, _, _) = classify_local_ip("127.0.0.1".parse().unwrap());
+        assert_eq!(country, "Loopback");
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn test_is_local_only_binding() {
@@ -1325,6 +1434,8 @@ mod tests {
 
         let mut banned = HashSet::new();
         banned.insert("192.168.1.150".to_string());
+        let mut whitelisted = HashSet::new();
+        whitelisted.insert("192.168.1.1".to_string());
 
         let sys_info = SysInfo {
             distro: "Fedora Linux 41".to_string(),
@@ -1332,7 +1443,7 @@ mod tests {
             arch: "x86_64".to_string(),
         };
 
-        let res = export_threat_report(&incidents, &banned, &sys_info, Language::Pt);
+        let res = export_threat_report(&incidents, &banned, &whitelisted, &sys_info, Language::Pt);
         assert!(res.is_ok());
         let (json_file, csv_file) = res.unwrap();
 
@@ -1345,7 +1456,8 @@ mod tests {
         assert!(json_content.contains("gateway.lan"));
 
         let csv_content = std::fs::read_to_string(&csv_file).unwrap();
-        assert!(csv_content.contains("Timestamp,IP,Port,Service,Severity,Score,Country,City,ISP,rDNS,Payload,Hits,Banned"));
+        assert!(csv_content.contains("MitreID,MitreTactic"));
+        assert!(csv_content.contains("Whitelisted"));
         assert!(csv_content.contains("gateway.lan"));
         assert!(csv_content.contains("SSH-2.0-OpenSSH_9.0"));
         assert!(csv_content.contains("\"SIM\""));

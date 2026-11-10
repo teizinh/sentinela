@@ -117,6 +117,161 @@ pub struct GeoResponse {
     pub status: Option<String>,
 }
 
+/// Mapeamento de ameaças para a Matriz MITRE ATT&CK para análise SOC
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MitreTechnique {
+    pub id: String,
+    pub name: String,
+    pub tactic: String,
+    pub url: String,
+}
+
+/// Determina a técnica e tática MITRE ATT&CK correspondente ao incidente
+pub fn map_to_mitre(severity: &str, port: u16, payload: Option<&str>) -> MitreTechnique {
+    if severity == "SWEEP" {
+        return MitreTechnique {
+            id: "T1046".to_string(),
+            name: "Network Service Discovery (Horizontal Sweep)".to_string(),
+            tactic: "Discovery (TA0007)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1046/".to_string(),
+        };
+    }
+    if severity == "SCAN" {
+        return MitreTechnique {
+            id: "T1046".to_string(),
+            name: "Network Service Discovery (Port Scan)".to_string(),
+            tactic: "Discovery (TA0007)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1046/".to_string(),
+        };
+    }
+
+    match port {
+        22 | 2222 => MitreTechnique {
+            id: "T1110.001".to_string(),
+            name: "Brute Force: Password Guessing (SSH)".to_string(),
+            tactic: "Credential Access (TA0006)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1110/001/".to_string(),
+        },
+        21 | 2121 => MitreTechnique {
+            id: "T1110.001".to_string(),
+            name: "Brute Force: Password Guessing (FTP)".to_string(),
+            tactic: "Credential Access (TA0006)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1110/001/".to_string(),
+        },
+        23 | 2323 => MitreTechnique {
+            id: "T1021.002".to_string(),
+            name: "Remote Services: SMB/Telnet".to_string(),
+            tactic: "Lateral Movement (TA0008)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1021/002/".to_string(),
+        },
+        25 => MitreTechnique {
+            id: "T1595.002".to_string(),
+            name: "Active Scanning: Vulnerability Scanning (SMTP)".to_string(),
+            tactic: "Reconnaissance (TA0043)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1595/002/".to_string(),
+        },
+        80 | 8080 | 8443 | 443 => {
+            if let Some(p) = payload {
+                let p_lower = p.to_lowercase();
+                if p_lower.contains("admin")
+                    || p_lower.contains(".env")
+                    || p_lower.contains("wp-")
+                    || p_lower.contains("setup")
+                    || p_lower.contains("config")
+                {
+                    MitreTechnique {
+                        id: "T1190".to_string(),
+                        name: "Exploit Public-Facing Application (Web Probe)".to_string(),
+                        tactic: "Initial Access (TA0001)".to_string(),
+                        url: "https://attack.mitre.org/techniques/T1190/".to_string(),
+                    }
+                } else {
+                    MitreTechnique {
+                        id: "T1595.002".to_string(),
+                        name: "Active Scanning: Vulnerability Scanning (HTTP)".to_string(),
+                        tactic: "Reconnaissance (TA0043)".to_string(),
+                        url: "https://attack.mitre.org/techniques/T1595/002/".to_string(),
+                    }
+                }
+            } else {
+                MitreTechnique {
+                    id: "T1595.002".to_string(),
+                    name: "Active Scanning: Vulnerability Scanning (HTTP)".to_string(),
+                    tactic: "Reconnaissance (TA0043)".to_string(),
+                    url: "https://attack.mitre.org/techniques/T1595/002/".to_string(),
+                }
+            }
+        }
+        3306 | 5432 => MitreTechnique {
+            id: "T1078.001".to_string(),
+            name: "Valid Accounts: Default / Database Accounts".to_string(),
+            tactic: "Initial Access / Defense Evasion".to_string(),
+            url: "https://attack.mitre.org/techniques/T1078/001/".to_string(),
+        },
+        6379 => MitreTechnique {
+            id: "T1210".to_string(),
+            name: "Exploitation of Remote Services (Redis)".to_string(),
+            tactic: "Lateral Movement (TA0008)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1210/".to_string(),
+        },
+        3389 => MitreTechnique {
+            id: "T1021.001".to_string(),
+            name: "Remote Services: Remote Desktop Protocol (RDP)".to_string(),
+            tactic: "Lateral Movement (TA0008)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1021/001/".to_string(),
+        },
+        _ => MitreTechnique {
+            id: "T1046".to_string(),
+            name: "Network Service Discovery".to_string(),
+            tactic: "Discovery (TA0007)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1046/".to_string(),
+        },
+    }
+}
+
+/// Formata uma cadeia de bytes ou texto no formato hexdump canónico (estilo xxd / Wireshark)
+pub fn format_hexdump(input: &str) -> String {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
+        let offset = chunk_idx * 16;
+        result.push_str(&format!("{:04x}:  ", offset));
+
+        // Bytes em hexadecimal (espaço adicional a cada 8 bytes)
+        for (i, byte) in chunk.iter().enumerate() {
+            if i == 8 {
+                result.push(' ');
+            }
+            result.push_str(&format!("{:02x} ", byte));
+        }
+
+        // Preenchimento de espaços se o último bloco tiver menos de 16 bytes
+        if chunk.len() < 16 {
+            let missing = 16 - chunk.len();
+            let pad_spaces = missing * 3 + if chunk.len() <= 8 { 1 } else { 0 };
+            for _ in 0..pad_spaces {
+                result.push(' ');
+            }
+        }
+
+        result.push_str(" |");
+        for byte in chunk {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                result.push(*byte as char);
+            } else {
+                result.push('.');
+            }
+        }
+        result.push_str("|\n");
+    }
+
+    result.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +327,27 @@ mod tests {
         assert_eq!(calculate_threat_score("CRÍTICO", 5, true), 90);
         assert_eq!(calculate_threat_score("SWEEP", 10, true), 100);
         assert_eq!(calculate_threat_score("ALERTA", 1, false), 20);
+    }
+
+    #[test]
+    fn test_map_to_mitre() {
+        let sweep = map_to_mitre("SWEEP", 0, None);
+        assert_eq!(sweep.id, "T1046");
+        assert!(sweep.name.contains("Horizontal Sweep"));
+
+        let ssh = map_to_mitre("CRÍTICO", 2222, Some("SSH-2.0-OpenSSH"));
+        assert_eq!(ssh.id, "T1110.001");
+        assert!(ssh.name.contains("SSH"));
+
+        let web_probe = map_to_mitre("MÉDIO", 8080, Some("GET /admin/.env HTTP/1.1"));
+        assert_eq!(web_probe.id, "T1190");
+    }
+
+    #[test]
+    fn test_format_hexdump() {
+        assert_eq!(format_hexdump(""), "");
+        let dump = format_hexdump("GET /admin");
+        assert!(dump.starts_with("0000:  47 45 54 20 2f 61 64 6d"));
+        assert!(dump.ends_with("|GET /admin|"));
     }
 }

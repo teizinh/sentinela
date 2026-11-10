@@ -53,21 +53,54 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    // Opções de linha de comandos: --auto-ban, --webhook <URL>, --whitelist <IPS>
+    let auto_ban_cli = raw_args.iter().any(|a| a == "--auto-ban");
+    let mut auto_ban = auto_ban_cli;
+
+    let mut webhook_url: Option<String> = env::var("SENTINELA_WEBHOOK")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut whitelisted_ips: HashSet<String> = HashSet::new();
+    if let Ok(env_white) = env::var("SENTINELA_WHITELIST") {
+        for ip in env_white.split(&[',', ' ', ';'][..]) {
+            let clean = ip.trim();
+            if !clean.is_empty() {
+                whitelisted_ips.insert(clean.to_string());
+            }
+        }
+    }
+
+    let mut i = 0;
+    while i < raw_args.len() {
+        if raw_args[i] == "--webhook" && i + 1 < raw_args.len() {
+            webhook_url = Some(raw_args[i + 1].clone());
+            i += 2;
+        } else if raw_args[i] == "--whitelist" && i + 1 < raw_args.len() {
+            for ip in raw_args[i + 1].split(&[',', ' ', ';'][..]) {
+                let clean = ip.trim();
+                if !clean.is_empty() {
+                    whitelisted_ips.insert(clean.to_string());
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
     // Lê portas custom passadas como argumento: ./sentinela 2222 8080 9999
     // Se nenhuma for passada, usa as portas padrão
-    let trap_ports: Vec<u16> = if raw_args.is_empty() {
+    let parsed_ports: Vec<u16> = raw_args
+        .iter()
+        .filter_map(|a| a.parse::<u16>().ok())
+        .collect();
+
+    let trap_ports: Vec<u16> = if parsed_ports.is_empty() {
         traps::DEFAULT_TRAP_PORTS.to_vec()
     } else {
-        let parsed: Vec<u16> = raw_args
-            .iter()
-            .filter_map(|a| a.parse::<u16>().ok())
-            .collect();
-        if parsed.is_empty() {
-            eprintln!("Portas inválidas. A usar portas padrão.");
-            traps::DEFAULT_TRAP_PORTS.to_vec()
-        } else {
-            parsed
-        }
+        parsed_ports
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Incident>();
@@ -161,6 +194,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
             network::send_desktop_alert(&incident);
 
+            // Bloqueio automático de atacantes de alto risco quando auto-ban estiver ativo
+            let mut was_auto_banned = false;
+            let is_whitelisted = whitelisted_ips.contains(&incident.ip);
+            if auto_ban && !is_whitelisted && (incident.threat_score >= 80 || incident.severity == "SWEEP") {
+                let is_host = incident
+                    .ip
+                    .parse::<std::net::IpAddr>()
+                    .map(network::is_host_ip)
+                    .unwrap_or(false);
+
+                if !banned_ips.contains(&incident.ip) && !is_host {
+                    if let Ok(()) = network::ban_ip(&incident.ip) {
+                        banned_ips.insert(incident.ip.clone());
+                        was_auto_banned = true;
+                        let toast = match lang {
+                            Language::Pt => format!(
+                                "[🛡️ AUTO-BAN] IP {} bloqueado no firewall (Score: {})",
+                                incident.ip, incident.threat_score
+                            ),
+                            Language::En => format!(
+                                "[🛡️ AUTO-BAN] IP {} blocked on firewall (Score: {})",
+                                incident.ip, incident.threat_score
+                            ),
+                        };
+                        toast_message = Some((toast, Instant::now()));
+                    }
+                }
+            }
+
+            // Dispara notificação de webhook assíncrona para Discord/Slack se configurado
+            if let Some(ref url) = webhook_url {
+                if was_auto_banned
+                    || incident.severity == "CRÍTICO"
+                    || incident.severity == "SWEEP"
+                    || incident.threat_score >= 70
+                {
+                    network::send_webhook_alert(url, &incident, was_auto_banned);
+                }
+            }
+
             log_batch.push(incident.clone());
             incidents.insert(0, incident);
             // Guarda mais incidentes em memória (100) para permitir scroll
@@ -237,8 +310,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 selected_incident,
                 show_incident_modal,
                 banned_ips: &banned_ips,
+                whitelisted_ips: &whitelisted_ips,
                 toast_message: active_toast,
                 audio_alerts,
+                auto_ban,
+                webhook_active: webhook_url.is_some(),
                 activity_history: &activity_history,
                 animation_tick,
             };
@@ -324,9 +400,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
+                        // Adicionar / Remover da Whitelist dentro da modal de raio-X
+                        KeyCode::Char('u' | 'U') if show_incident_modal => {
+                            if let Some(inc) = selected_incident {
+                                let target_ip = inc.ip.clone();
+                                if whitelisted_ips.contains(&target_ip) {
+                                    whitelisted_ips.remove(&target_ip);
+                                    let msg = match lang {
+                                        Language::Pt => format!("[✓] IP {} removido da Whitelist", target_ip),
+                                        Language::En => format!("[✓] IP {} removed from Whitelist", target_ip),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
+                                } else {
+                                    whitelisted_ips.insert(target_ip.clone());
+                                    if banned_ips.contains(&target_ip) {
+                                        let _ = network::unban_ip(&target_ip);
+                                        banned_ips.remove(&target_ip);
+                                    }
+                                    let msg = match lang {
+                                        Language::Pt => format!("[🛡️] IP {} adicionado à Whitelist (imune a auto-ban)", target_ip),
+                                        Language::En => format!("[🛡️] IP {} added to Whitelist (immune to auto-ban)", target_ip),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
+                                }
+                            }
+                        }
                         // Exportar relatório completo de Threat Intel
                         KeyCode::Char('e' | 'E') => {
-                            match network::export_threat_report(&incidents, &banned_ips, &sys_info, lang) {
+                            match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
                                 Ok((json_f, csv_f)) => {
                                     toast_message = Some((
                                         format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
@@ -398,9 +499,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
+                        // Adicionar / Remover IP selecionado da Whitelist
+                        KeyCode::Char('u' | 'U') => {
+                            if let Some(inc) = selected_incident {
+                                let target_ip = inc.ip.clone();
+                                if whitelisted_ips.contains(&target_ip) {
+                                    whitelisted_ips.remove(&target_ip);
+                                    let msg = match lang {
+                                        Language::Pt => format!("[✓] IP {} removido da Whitelist", target_ip),
+                                        Language::En => format!("[✓] IP {} removed from Whitelist", target_ip),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
+                                } else {
+                                    whitelisted_ips.insert(target_ip.clone());
+                                    if banned_ips.contains(&target_ip) {
+                                        let _ = network::unban_ip(&target_ip);
+                                        banned_ips.remove(&target_ip);
+                                    }
+                                    let msg = match lang {
+                                        Language::Pt => format!("[🛡️] IP {} adicionado à Whitelist (imune a auto-ban)", target_ip),
+                                        Language::En => format!("[🛡️] IP {} added to Whitelist (immune to auto-ban)", target_ip),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
+                                }
+                            }
+                        }
                         // Exportar relatório completo de Threat Intel (JSON e CSV)
                         KeyCode::Char('e' | 'E') => {
-                            match network::export_threat_report(&incidents, &banned_ips, &sys_info, lang) {
+                            match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
                                 Ok((json_f, csv_f)) => {
                                     toast_message = Some((
                                         format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
@@ -492,6 +618,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 killswitch_failed = true;
                             }
                         },
+                        // Alternar Auto-Ban (bloqueio automático de atacantes de alto risco)
+                        KeyCode::Char('x' | 'X') => {
+                            auto_ban = !auto_ban;
+                            let msg = if auto_ban {
+                                match lang {
+                                    Language::Pt => "[🛡️] Auto-Ban: ATIVADO (Threat Score ≥ 80)",
+                                    Language::En => "[🛡️] Auto-Ban: ENABLED (Threat Score ≥ 80)",
+                                }
+                            } else {
+                                match lang {
+                                    Language::Pt => "[🛡️] Auto-Ban: DESATIVADO",
+                                    Language::En => "[🛡️] Auto-Ban: DISABLED",
+                                }
+                            };
+                            toast_message = Some((msg.to_string(), Instant::now()));
+                        }
                         // Filtro de severidade
                         KeyCode::Char('f' | 'F') => {
                             severity_filter = severity_filter.next();
@@ -671,12 +813,17 @@ fn print_help() {
     println!("  [PORTAS...]     Portas adicionais para escuta de armadilhas (ex: 2222 8080 9999)");
     println!("                  Padrão: 2121, 2222, 2323, 8080, 8443\n");
     println!("\x1b[1mOPÇÕES:\x1b[0m");
-    println!("  -h, --help      Apresenta esta mensagem de ajuda");
-    println!("  -v, --version   Apresenta a versão do Sentinela\n");
+    println!("  -h, --help        Apresenta esta mensagem de ajuda");
+    println!("  -v, --version     Apresenta a versão do Sentinela");
+    println!("  --auto-ban        Ativa bloqueio automático no firewall (Threat Score >= 80)");
+    println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
+    println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)\n");
     println!("\x1b[1mATALHOS NO DASHBOARD:\x1b[0m");
     println!("  q / Ctrl+C      Sair do Sentinela e restaurar terminal");
     println!("  ↵ (Enter)       Raio-X forense detalhado do incidente selecionado");
     println!("  b               Banir / Desbanir IP do atacante (DROP firewall)");
+    println!("  u               Adicionar / Remover IP selecionado da Whitelist");
+    println!("  x               Alternar Auto-Ban (bloqueio automático de alto risco)");
     println!("  e               Exportar Threat Intelligence da sessão (JSON + CSV)");
     println!("  a               Ativar / Desativar alerta sonoro (Bell) e notificações");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
