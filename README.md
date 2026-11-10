@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.4-green.svg" alt="Version 0.3.4">
+  <img src="https://img.shields.io/badge/Version-0.3.5-green.svg" alt="Version 0.3.5">
 </p>
 
 ---
@@ -97,8 +97,25 @@ Press `b` in the dashboard or within the inspection modal to immediately block t
 ### Audio & desktop alert toggle
 Press `a` to toggle immediate audio terminal bell (`\x07`) sounds and high-urgency OS desktop notifications for incoming Critical and Port Sweep alerts.
 
-### Threat intelligence export
-Press `e` at any time to dump the complete session threat intelligence to both `sentinela_report_YYYY-MM-DD_HH-MM-SS.json` and `.csv` files. Includes system metadata, active trap ports, unique attacker count, banned IPs, threat scores, captured payloads, and full incident histories.
+### Threat intelligence & Wireshark PCAP capture export
+Press `e` at any time to dump the complete session threat intelligence:
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.json`: Machine-readable SOC report including system metadata, active trap ports, unique attacker counts, whitelist state, MITRE ATT&CK techniques, and threat scores.
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.csv`: Tabular spreadsheet format for forensic analysis.
+- `sentinela_capture_YYYY-MM-DD_HH-MM-SS.pcap`: Fully valid libpcap binary packet trace containing synthesized Ethernet/IP/TCP frames and payloads for every captured incident — open and analyze directly in **Wireshark** or **tcpdump**!
+
+### Visual dashboard themes
+Press `t` to cycle through 4 distinct visual themes:
+- **Cyber SOC (Default):** High-tech cyan, yellow, and red SOC aesthetics.
+- **Matrix Hacker:** Classic monochrome phosphor green and dark shades.
+- **Midnight Violet:** Dark indigo borders with magenta and cyan highlights.
+- **High Contrast:** Crisp white and bold yellow layout designed for bright environments or classroom projectors.
+You can also launch with a specific theme using `--theme matrix` or set `SENTINELA_THEME=matrix`.
+
+### Real-time forensic search & filter
+Press `/` in the dashboard to open an inline search bar. Type any IP, port number, or service keyword (e.g. `/192.168`, `/22`, `/admin`, `/CRIT`) to filter live incidents in real time. Press `Enter` to commit the filter or `Esc` to clear and return.
+
+### Diagnostic attack simulation
+Press `s` or launch with `--simulate` to inject realistic diagnostic test attack sequences (SSH brute-force, web vulnerability probing, and horizontal port sweeps) to test alerting sounds, webhooks, MITRE mapping, and auto-ban behavior without needing an external machine.
 
 ### GeoIP lookup
 Every detected IP is looked up against the [ip-api.com](http://ip-api.com) service. Country, city and ISP are shown in the dashboard and written to the log. Results are cached for the session; failed lookups retry after two minutes.
@@ -146,7 +163,10 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 | `b` | Surgically ban / unban selected attacker IP (DROP firewall rule) |
 | `u` | Add / remove selected IP to/from trusted whitelist (immune to auto-ban) |
 | `x` | Toggle automated firewall auto-ban for high-threat IPs (Threat Score ≥ 80) |
-| `e` | Export session Threat Intel report to JSON and CSV |
+| `t` | Cycle visual dashboard themes (Cyber SOC / Matrix / Midnight / High Contrast) |
+| `/` | Live interactive search & filter by IP, port or service keyword |
+| `s` | Inject diagnostic test attack simulation sequence into SOC |
+| `e` | Export session Threat Intel report (JSON, CSV, and Wireshark PCAP) |
 | `a` | Toggle audio bell alarm and desktop notifications |
 | `i` | Open / close help modal |
 | `w` | Open / close port security audit |
@@ -229,6 +249,8 @@ The killswitch also needs `CAP_NET_ADMIN` (or root) to insert `iptables` rules. 
 | Auto-Ban firewall rules | ✓ (iptables) | ✓ (netsh) |
 | Trusted Whitelisting | ✓ | ✓ |
 | MITRE ATT&CK Mapping | ✓ | ✓ |
+| Wireshark PCAP export | ✓ | ✓ |
+| Live search & Themes | ✓ | ✓ |
 | Webhook alerts | ✓ | ✓ |
 | Killswitch | ✓ (iptables + rfkill) | ✓ (PowerShell) |
 | Desktop notifications | ✓ (notify-send) | ✓ (PowerShell) |
