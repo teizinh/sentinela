@@ -1,6 +1,6 @@
 [package]
 name = "sentinela"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 
 [dependencies]
@@ -14,6 +14,7 @@ chrono = "0.4"
 get_if_addrs = "0.5"
 dns-lookup = "4.0.2"
 unicode-width = "0.1"
+toml = "0.8"
 
 # Captura de pacotes raw para deteção de SYN scans (nmap -sS, etc.)
 # No Linux usa AF_PACKET nativo do kernel (requer CAP_NET_RAW ou sudo).

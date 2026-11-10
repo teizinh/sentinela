@@ -40,6 +40,9 @@ pub struct UiContext<'a> {
     pub theme: Theme,
     pub search_query: Option<&'a str>,
     pub search_active: bool,
+    pub show_metrics: bool,
+    pub show_port_modal: bool,
+    pub port_input: &'a str,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -239,6 +242,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         theme,
         search_query,
         search_active,
+        show_metrics,
+        show_port_modal,
+        port_input,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -701,18 +707,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         toast.to_string()
     } else if screen_width < 60 {
         match lang {
-            Language::Pt => " [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [Q]Sair".to_string(),
-            Language::En => " [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [Q]Quit".to_string(),
+            Language::Pt => " [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [O]Porta [M]Met [Q]Sair".to_string(),
+            Language::En => " [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [O]Port [M]Met [Q]Quit".to_string(),
         }
     } else if screen_width < 95 {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [S] Sim | [I] Ajuda | [Q] Sair".to_string(),
-            Language::En => " [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [S] Sim | [I] Help | [Q] Quit".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [O] Porta | [M] Métricas | [Q] Sair".to_string(),
+            Language::En => " [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [O] Port | [M] Metrics | [Q] Quit".to_string(),
         }
     } else {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [W] Avisos | [I] Manual | [Q] Sair ".to_string(),
-            Language::En => " [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [W] Warnings | [I] Manual | [Q] Quit ".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [O] +Porta | [M] Métricas | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [I] Manual | [Q] Sair ".to_string(),
+            Language::En => " [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [O] +Port | [M] Metrics | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [I] Manual | [Q] Quit ".to_string(),
         }
     };
 
@@ -840,17 +846,22 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                       [X]   Auto-Ban: Alterna bloqueio automatico de ameacas (Score >= 80).\n\
                       [T]   Tema: Alterna esquema de cores (Cyber SOC / Matrix / Midnight / Alto Contraste).\n\
                       [/]   Buscar: Filtra incidentes em direto por IP, Porta ou Servico.\n\
+                      [O]   +Porta: Ativa armadilha honeypot dinâmica em direto (porta TCP).\n\
+                      [M]   Métricas: Painel executivo de telemetria forense e estatísticas SOC.\n\
                       [S]   Simular: Injeta ataques de teste para demonstracao e diagnostico.\n\
                       [U]   Whitelist: Adiciona/Remove IP da lista de confianca (imune a auto-ban).\n\
-                       [E]   Exportar: Exporta Threat Intel completa da sessão (JSON + CSV).\n\
-                       [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
-                       [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
-                       [A]   Alertas: Ativar/Desativar som de alarme e notificações desktop.\n\
-                       [K]   Killswitch: Isola o PC da rede imediatamente.\n\
-                       [R]   Repor: Restaura as interfaces de rede normais.\n\
-                       [L]   Idioma: Alterna entre Português e Inglês.\n\
-                       [I]   Manual: Abre e fecha este ecrã de ajuda.\n\
-                       [Q]   Sair: Termina e imprime o relatório estatístico.\n\n\
+                      [E]   Exportar: Threat Intel completa (JSON, CSV, PCAP, CEF e Syslog RFC 5424).\n\
+                      [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
+                      [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
+                      [A]   Alertas: Ativar/Desativar som de alarme e notificações desktop.\n\
+                      [K]   Killswitch: Isola o PC da rede imediatamente.\n\
+                      [R]   Repor: Restaura as interfaces de rede normais.\n\
+                      [L]   Idioma: Alterna entre Português e Inglês.\n\
+                      [I]   Manual: Abre e fecha este ecrã de ajuda.\n\
+                      [Q]   Sair: Termina e imprime o relatório estatístico.\n\n\
+                     • CONFIGURAÇÃO PERSISTENTE:\n\
+                       Gera ficheiro sentinela.toml com: ./sentinela --init-config\n\
+                       Carrega ficheiro personalizado com: ./sentinela --config custom.toml\n\n\
                      • PORTAS CUSTOM:\n\
                        Podes iniciar com portas à escolha:\n\
                        ./sentinela 2222 8080 9999\n\n\
@@ -881,17 +892,22 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                       [X]   Auto-Ban: Toggle automated blocking of high-threat IPs (Score >= 80).\n\
                       [T]   Theme: Toggle color palette (Cyber SOC / Matrix / Midnight / High Contrast).\n\
                       [/]   Search: Real-time search filter by IP, Port or Service.\n\
+                      [O]   +Port: Spawn dynamic honeypot trap on TCP port.\n\
+                      [M]   Metrics: Executive SOC telemetry and forensic attack stats.\n\
                       [S]   Simulate: Inject diagnostic test attacks into SOC.\n\
                       [U]   Whitelist: Add/Remove IP from trusted whitelist (immune to auto-ban).\n\
-                       [E]   Export: Dump Threat Intel session report to JSON and CSV.\n\
-                       [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
-                       [W]   Warnings: Checks risky listening ports and fix commands.\n\
-                       [A]   Alerts: Toggle audio bell sound and desktop notifications.\n\
-                       [K]   Killswitch: Disconnects the system from all networks.\n\
-                       [R]   Restore: Re-enables networking adapters.\n\
-                       [L]   Language: Toggles between Portuguese and English.\n\
-                       [I]   Manual: Opens and closes this manual window.\n\
-                       [Q]   Quit: Closes Sentinela and displays audit summary.\n\n\
+                      [E]   Export: Full Threat Intel (JSON, CSV, PCAP, CEF, Syslog RFC 5424).\n\
+                      [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
+                      [W]   Warnings: Checks risky listening ports and fix commands.\n\
+                      [A]   Alerts: Toggle audio bell sound and desktop notifications.\n\
+                      [K]   Killswitch: Disconnects the system from all networks.\n\
+                      [R]   Restore: Re-enables networking adapters.\n\
+                      [L]   Language: Toggles between Portuguese and English.\n\
+                      [I]   Manual: Opens and closes this manual window.\n\
+                      [Q]   Quit: Closes Sentinela and displays audit summary.\n\n\
+                     • PERSISTENT CONFIGURATION:\n\
+                       Generate sentinela.toml template with: ./sentinela --init-config\n\
+                       Load custom configuration with: ./sentinela --config custom.toml\n\n\
                      • CUSTOM PORTS:\n\
                        Launch with your own trap ports:\n\
                        ./sentinela 2222 8080 9999\n\n\
@@ -1127,6 +1143,184 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
             f.render_widget(modal_p, area);
         }
+    }
+
+    // 7. Modal de Métricas e Análise Forense SOC (Tecla M)
+    if show_metrics {
+        let area = centered_rect(modal_w, modal_h, f.area());
+        f.render_widget(Clear, area);
+
+        let total_hits: usize = port_stats.values().sum();
+        let mut sorted_ports: Vec<(&u16, &usize)> = port_stats.iter().collect();
+        sorted_ports.sort_by(|a, b| b.1.cmp(a.1));
+
+        let mut ports_chart = String::new();
+        if sorted_ports.is_empty() {
+            ports_chart.push_str(match lang {
+                Language::Pt => "   (Nenhuma sondagem registada até ao momento)\n",
+                Language::En => "   (No port probes recorded yet)\n",
+            });
+        } else {
+            for (&p, &c) in sorted_ports.iter().take(6) {
+                let pct = (c * 100).checked_div(total_hits).unwrap_or(0);
+                let bar_len = (pct / 5).min(20);
+                let bar = "█".repeat(bar_len);
+                let (svc, _) = crate::traps::classify_port(p);
+                ports_chart.push_str(&format!(
+                    "   • Porta {:<5} ({:<10}) : [{:<20}] {:>3}x ({}%)\n",
+                    p, svc, bar, c, pct
+                ));
+            }
+        }
+
+        let mut mitre_counts: HashMap<String, usize> = HashMap::new();
+        for inc in incidents {
+            let m = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+            *mitre_counts.entry(m.id.to_string()).or_insert(0) += 1;
+        }
+        let mut sorted_mitre: Vec<(&String, &usize)> = mitre_counts.iter().collect();
+        sorted_mitre.sort_by(|a, b| b.1.cmp(a.1));
+
+        let mut mitre_chart = String::new();
+        if sorted_mitre.is_empty() {
+            mitre_chart.push_str(match lang {
+                Language::Pt => "   (Sem táticas MITRE associadas nesta sessão)\n",
+                Language::En => "   (No MITRE tactics associated in this session)\n",
+            });
+        } else {
+            for (id, &c) in sorted_mitre.iter().take(5) {
+                mitre_chart.push_str(&format!("   • MITRE {:<10} : {} ocorrência(s)\n", id, c));
+            }
+        }
+
+        let crit = severity_stats.get("CRÍTICO").copied().unwrap_or(0);
+        let med = severity_stats.get("MÉDIO").copied().unwrap_or(0);
+        let alrt = severity_stats.get("ALERTA").copied().unwrap_or(0);
+        let swp = severity_stats.get("SWEEP").copied().unwrap_or(0);
+
+        let (title, content) = match lang {
+            Language::Pt => (
+                " [📊] MÉTRICAS E TELEMETRIA SOC - SENTINELA ",
+                format!(
+                    "PAINEL EXECUTIVO DE TELEMETRIA FORENSE\n\
+                     -------------------------------------------------------------\n\
+                     • TOTAL DE SONDAGENS : {}\n\
+                     • ATACANTES ÚNICOS   : {}\n\
+                     • IPs BLOQUEADOS     : {} (Regras DROP ativas no firewall)\n\
+                     • IPs NA WHITELIST   : {} (Imunes a Auto-Ban)\n\
+                     • ARMADILHAS ATIVAS  : {} portas monitorizadas\n\n\
+                     DISTRIBUIÇÃO DE SEVERIDADE:\n\
+                     • Crítico: {:<4} | Sweep/Var: {:<4} | Médio: {:<4} | Alerta: {:<4}\n\n\
+                     TOP PORTAS VISADAS PELOS ATACANTES:\n\
+                     {}\n\
+                     MATRIZ MITRE ATT&CK OBSERVADA:\n\
+                     {}\n\
+                     ESTADO DA DEFESA ATIVA:\n\
+                     • Auto-Ban: {}\n\
+                     • Alertas Sonoros: {}\n\
+                     • Scanner Raw (Linux CAP_NET_RAW): {}\n\n\
+                     [j/k ou ↑↓ scroll | M ou ESC fechar]",
+                    incidents.len(),
+                    incidents.iter().map(|i| &i.ip).collect::<std::collections::HashSet<_>>().len(),
+                    banned_ips.len(),
+                    whitelisted_ips.len(),
+                    trap_ports.len(),
+                    crit, swp, med, alrt,
+                    ports_chart,
+                    mitre_chart,
+                    if auto_ban { "ATIVO (Threshold >= 80)" } else { "DESATIVADO" },
+                    if audio_alerts { "ATIVADO (Terminal Bell)" } else { "DESATIVADO" },
+                    if scanner_active { "ATIVO (Deteção SYN Scan)" } else { "INATIVO (Modo Socket)" }
+                ),
+            ),
+            Language::En => (
+                " [📊] SOC METRICS & FORENSIC TELEMETRY - SENTINELA ",
+                format!(
+                    "EXECUTIVE TELEMETRY & ATTACK ANALYSIS PANEL\n\
+                     -------------------------------------------------------------\n\
+                     • TOTAL INCIDENTS    : {}\n\
+                     • UNIQUE ATTACKERS   : {}\n\
+                     • BANNED IPS (DROP)  : {} active firewall drops\n\
+                     • WHITELISTED IPS    : {} trusted addresses\n\
+                     • ACTIVE HONEYPOTS   : {} ports monitored\n\n\
+                     SEVERITY BREAKDOWN:\n\
+                     • Critical: {:<4} | Sweep: {:<4} | Medium: {:<4} | Alert: {:<4}\n\n\
+                     TOP TARGETED PORTS (ATTACK SURFACE):\n\
+                     {}\n\
+                     OBSERVED MITRE ATT&CK TACTICS:\n\
+                     {}\n\
+                     ACTIVE DEFENSE POSTURE:\n\
+                     • Auto-Ban: {}\n\
+                     • Audio Alerts: {}\n\
+                     • Raw Packet Sniffer (CAP_NET_RAW): {}\n\n\
+                     [j/k or ↑↓ scroll | M or ESC close]",
+                    incidents.len(),
+                    incidents.iter().map(|i| &i.ip).collect::<std::collections::HashSet<_>>().len(),
+                    banned_ips.len(),
+                    whitelisted_ips.len(),
+                    trap_ports.len(),
+                    crit, swp, med, alrt,
+                    ports_chart,
+                    mitre_chart,
+                    if auto_ban { "ENABLED (Threshold >= 80)" } else { "DISABLED" },
+                    if audio_alerts { "ENABLED (Bell)" } else { "DISABLED" },
+                    if scanner_active { "ACTIVE (SYN Scan Detection)" } else { "INACTIVE (Socket Mode)" }
+                ),
+            ),
+        };
+
+        let final_title = format_modal_title(title, modal_scroll);
+        let modal_p = Paragraph::new(content)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: true })
+            .scroll((modal_scroll, 0))
+            .alignment(Alignment::Left)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(final_title)
+                    .style(Style::default().bg(Color::Black).fg(Color::Magenta)),
+            );
+
+        f.render_widget(modal_p, area);
+    }
+
+    // 8. Diálogo para Ativar Armadilha em Direto (Tecla O)
+    if show_port_modal {
+        let area = centered_rect(54, 25, f.area());
+        f.render_widget(Clear, area);
+
+        let (title, prompt, hint) = match lang {
+            Language::Pt => (
+                " [🎯] ATIVAR ARMADILHA EM DIRETO ",
+                "Introduza o número da porta TCP (1 - 65535):",
+                "[Enter: Ativar | Esc: Cancelar]",
+            ),
+            Language::En => (
+                " [🎯] SPAWN LIVE HONEYPOT TRAP ",
+                "Enter TCP port number to listen on (1 - 65535):",
+                "[Enter: Spawn | Esc: Cancel]",
+            ),
+        };
+
+        let dialog_text = format!(
+            "\n {}\n\n   > [ {} ]\n\n {}\n",
+            prompt,
+            if port_input.is_empty() { "____" } else { port_input },
+            hint
+        );
+
+        let modal_p = Paragraph::new(dialog_text)
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .style(Style::default().bg(Color::Black).fg(Color::Cyan)),
+            );
+
+        f.render_widget(modal_p, area);
     }
 }
 

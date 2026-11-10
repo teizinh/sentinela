@@ -556,19 +556,94 @@ pub fn unban_ip(_ip: &str) -> Result<(), String> {
     Err("Bloqueio cirúrgico de IP suportado em Linux e Windows".to_string())
 }
 
-/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON, CSV e captura PCAP (Wireshark).
+/// Gera formato CEF (ArcSight Common Event Format) compatível com Splunk, ArcSight, Wazuh e SIEMs
+pub fn generate_cef(incidents: &[Incident], banned_ips: &std::collections::HashSet<String>) -> String {
+    let mut out = String::new();
+    let version = env!("CARGO_PKG_VERSION");
+
+    for inc in incidents {
+        let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+        let sev_num = match inc.severity.as_str() {
+            "CRÍTICO" => 10,
+            "SWEEP" => 8,
+            "MÉDIO" => 6,
+            "ALERTA" => 4,
+            _ => 3,
+        };
+        let act = if banned_ips.contains(&inc.ip) { "blocked" } else { "alerted" };
+        let msg = inc.payload.as_deref().unwrap_or(&inc.service).replace('|', "\\|");
+
+        out.push_str(&format!(
+            "CEF:0|Sentinela|HIDS|{}|{}|{}|{}|src={} dstPort={} proto=TCP act={} cs1={} cs1Label=Country cs2={} cs2Label=ISP cn1={} cn1Label=ThreatScore msg={}\n",
+            version,
+            mitre.id,
+            mitre.name.replace('|', "\\|"),
+            sev_num,
+            inc.ip,
+            inc.port,
+            act,
+            inc.country.replace(' ', "_"),
+            inc.isp.replace(' ', "_"),
+            inc.threat_score,
+            msg
+        ));
+    }
+    out
+}
+
+/// Gera formato Syslog RFC 5424 compatível com rsyslog, syslog-ng, Logstash e Graylog
+pub fn generate_syslog_rfc5424(incidents: &[Incident], banned_ips: &std::collections::HashSet<String>, hostname: &str) -> String {
+    let mut out = String::new();
+    let pid = std::process::id();
+
+    for inc in incidents {
+        let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+        let pri = match inc.severity.as_str() {
+            "CRÍTICO" | "SWEEP" => 130, // local0.crit (16*8 + 2)
+            "MÉDIO" => 132,            // local0.warning (16*8 + 4)
+            _ => 134,                  // local0.info (16*8 + 6)
+        };
+        let is_banned = if banned_ips.contains(&inc.ip) { "true" } else { "false" };
+        let payload = inc.payload.as_deref().unwrap_or("-");
+
+        // Formato RFC 5424: <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [STRUCTURED-DATA] MSG
+        let iso_time = inc.timestamp.replace(' ', "T") + "Z";
+        out.push_str(&format!(
+            "<{}>1 {} {} sentinela {} {} [incident@sentinela src=\"{}\" dstPort=\"{}\" severity=\"{}\" score=\"{}\" hits=\"{}\" banned=\"{}\" mitre=\"{}\"] {} probe detected: {}\n",
+            pri,
+            iso_time,
+            hostname,
+            pid,
+            mitre.id,
+            inc.ip,
+            inc.port,
+            inc.severity,
+            inc.threat_score,
+            inc.hit_count,
+            is_banned,
+            mitre.id,
+            inc.service,
+            payload
+        ));
+    }
+    out
+}
+
+/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON, CSV, captura PCAP (Wireshark), CEF e Syslog RFC 5424.
 pub fn export_threat_report(
     incidents: &[Incident],
     banned_ips: &std::collections::HashSet<String>,
     whitelisted_ips: &std::collections::HashSet<String>,
     sys_info: &SysInfo,
     _lang: Language,
-) -> Result<(String, String, String), String> {
+) -> Result<(String, String, String, String, String), String> {
     let now = chrono::Local::now();
     let base_name = now.format("sentinela_report_%Y-%m-%d_%H-%M-%S").to_string();
     let json_name = format!("{}.json", base_name);
     let csv_name = format!("{}.csv", base_name);
     let pcap_name = format!("{}.pcap", base_name);
+    let cef_name = format!("{}.cef", base_name);
+    let syslog_name = format!("{}.syslog", base_name);
 
     #[derive(serde::Serialize)]
     struct ThreatReport<'a> {
@@ -632,7 +707,14 @@ pub fn export_threat_report(
 
     crate::pcap::write_pcap_file(&pcap_name, incidents)?;
 
-    Ok((json_name, csv_name, pcap_name))
+    let cef_content = generate_cef(incidents, banned_ips);
+    std::fs::write(&cef_name, cef_content).map_err(|e| format!("Erro ao gravar CEF: {}", e))?;
+
+    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "sentinela-node".to_string());
+    let syslog_content = generate_syslog_rfc5424(incidents, banned_ips, &hostname);
+    std::fs::write(&syslog_name, syslog_content).map_err(|e| format!("Erro ao gravar Syslog: {}", e))?;
+
+    Ok((json_name, csv_name, pcap_name, cef_name, syslog_name))
 }
 
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
@@ -1448,12 +1530,14 @@ mod tests {
 
         let res = export_threat_report(&incidents, &banned, &whitelisted, &sys_info, Language::Pt);
         assert!(res.is_ok());
-        let (json_file, csv_file, pcap_file) = res.unwrap();
+        let (json_file, csv_file, pcap_file, cef_file, syslog_file) = res.unwrap();
 
         // Verifica existência e conteúdo dos ficheiros
         assert!(std::path::Path::new(&json_file).exists());
         assert!(std::path::Path::new(&csv_file).exists());
         assert!(std::path::Path::new(&pcap_file).exists());
+        assert!(std::path::Path::new(&cef_file).exists());
+        assert!(std::path::Path::new(&syslog_file).exists());
 
         let json_content = std::fs::read_to_string(&json_file).unwrap();
         assert!(json_content.contains("192.168.1.150"));
@@ -1466,10 +1550,20 @@ mod tests {
         assert!(csv_content.contains("SSH-2.0-OpenSSH_9.0"));
         assert!(csv_content.contains("\"SIM\""));
 
+        let cef_content = std::fs::read_to_string(&cef_file).unwrap();
+        assert!(cef_content.contains("CEF:0|Sentinela|HIDS"));
+        assert!(cef_content.contains("src=192.168.1.150"));
+
+        let syslog_content = std::fs::read_to_string(&syslog_file).unwrap();
+        assert!(syslog_content.contains("sentinela"));
+        assert!(syslog_content.contains("src=\"192.168.1.150\""));
+
         // Limpeza dos ficheiros de teste
         let _ = std::fs::remove_file(json_file);
         let _ = std::fs::remove_file(csv_file);
         let _ = std::fs::remove_file(pcap_file);
+        let _ = std::fs::remove_file(cef_file);
+        let _ = std::fs::remove_file(syslog_file);
     }
 
     #[tokio::test]

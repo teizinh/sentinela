@@ -1,3 +1,4 @@
+mod config;
 mod models;
 mod network;
 mod pcap;
@@ -53,17 +54,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("sentinela {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if raw_args.iter().any(|a| a == "--init-config") {
+        let p = std::path::Path::new("sentinela.toml");
+        match config::generate_default_config_file(p) {
+            Ok(()) => {
+                println!("\x1b[1;32m[✓] Ficheiro de configuração '{}' gerado com sucesso!\x1b[0m", p.display());
+                println!("Podes editá-lo para personalizar portas, auto-ban, whitelist, webhook e temas.");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("\x1b[1;31m[!] Erro ao gerar '{}': {}\x1b[0m", p.display(), e);
+                return Err(Box::new(e) as Box<dyn Error>);
+            }
+        }
+    }
+
+    // Carregamento de ficheiro de configuração (sentinela.toml ou caminho customizado)
+    let mut custom_config_path: Option<String> = None;
+    let mut i = 0;
+    while i < raw_args.len() {
+        if (raw_args[i] == "-c" || raw_args[i] == "--config") && i + 1 < raw_args.len() {
+            custom_config_path = Some(raw_args[i + 1].clone());
+            break;
+        }
+        i += 1;
+    }
+
+    let (file_config, loaded_config_path) = match config::load_config(custom_config_path.as_deref()) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("\x1b[1;33m[!] Aviso de Configuração: {}\x1b[0m", e);
+            (config::SentinelaConfig::default(), None)
+        }
+    };
 
     // Opções de linha de comandos: --auto-ban, --webhook <URL>, --whitelist <IPS>, --theme <THEME>, --simulate
     let auto_ban_cli = raw_args.iter().any(|a| a == "--auto-ban");
-    let mut auto_ban = auto_ban_cli;
+    let mut auto_ban = auto_ban_cli || file_config.security.auto_ban;
 
     let mut webhook_url: Option<String> = env::var("SENTINELA_WEBHOOK")
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or(file_config.alerts.webhook_url.clone());
 
-    let mut theme = Theme::Cyber;
+    let mut theme = match file_config.ui.theme.to_lowercase().as_str() {
+        "matrix" => Theme::Matrix,
+        "midnight" => Theme::Midnight,
+        "contrast" | "highcontrast" | "high-contrast" => Theme::HighContrast,
+        _ => Theme::Cyber,
+    };
     if let Ok(env_theme) = env::var("SENTINELA_THEME") {
         match env_theme.to_lowercase().as_str() {
             "matrix" => theme = Theme::Matrix,
@@ -76,6 +116,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let simulate_on_startup = raw_args.iter().any(|a| a == "--simulate" || a == "--test-mode");
 
     let mut whitelisted_ips: HashSet<String> = HashSet::new();
+    for ip in &file_config.security.whitelist {
+        let clean = ip.trim();
+        if !clean.is_empty() {
+            whitelisted_ips.insert(clean.to_string());
+        }
+    }
     if let Ok(env_white) = env::var("SENTINELA_WHITELIST") {
         for ip in env_white.split(&[',', ' ', ';'][..]) {
             let clean = ip.trim();
@@ -106,22 +152,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
             i += 2;
+        } else if (raw_args[i] == "-c" || raw_args[i] == "--config") && i + 1 < raw_args.len() {
+            i += 2;
         } else {
             i += 1;
         }
     }
 
     // Lê portas custom passadas como argumento: ./sentinela 2222 8080 9999
-    // Se nenhuma for passada, usa as portas padrão
+    // Se nenhuma for passada, usa as portas do ficheiro de configuração ou padrão
     let parsed_ports: Vec<u16> = raw_args
         .iter()
         .filter_map(|a| a.parse::<u16>().ok())
         .collect();
 
-    let trap_ports: Vec<u16> = if parsed_ports.is_empty() {
-        traps::DEFAULT_TRAP_PORTS.to_vec()
-    } else {
+    let mut trap_ports: Vec<u16> = if !parsed_ports.is_empty() {
         parsed_ports
+    } else if !file_config.traps.ports.is_empty() {
+        file_config.traps.ports.clone()
+    } else {
+        traps::DEFAULT_TRAP_PORTS.to_vec()
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Incident>();
@@ -130,9 +180,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let log_file_name = traps::get_log_filename();
     let local_ips = network::get_all_local_ips();
     let sys_info = network::get_system_info();
-    let mut lang = network::detect_language();
+    let mut lang = match file_config.ui.language.to_lowercase().as_str() {
+        "en" => Language::En,
+        _ => network::detect_language(),
+    };
 
-    let (_active_traps, failed_traps) = traps::start_traps(tx.clone(), &trap_ports).await;
+    let (_active_traps, failed_traps, queue_tx) = traps::start_traps(tx.clone(), &trap_ports).await;
 
     // Tenta iniciar o scanner de pacotes raw (requer CAP_NET_RAW / sudo).
     // Se falhar por falta de permissão, continua apenas com deteção de ligações completas.
@@ -150,9 +203,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_help = false;
     let mut show_warnings = false;
     let mut show_incident_modal = false;
+    let mut show_metrics = false;
+    let mut show_port_modal = false;
+    let mut port_input = String::new();
     let mut banned_ips: HashSet<String> = HashSet::new();
-    let mut toast_message: Option<(String, Instant)> = None;
-    let mut audio_alerts = false;
+    let mut audio_alerts = file_config.alerts.audio_alerts;
+    let mut toast_message: Option<(String, Instant)> = loaded_config_path.map(|p| {
+        let msg = match lang {
+            Language::Pt => format!("[⚙️] Configuração carregada: {}", p.display()),
+            Language::En => format!("[⚙️] Configuration loaded: {}", p.display()),
+        };
+        (msg, Instant::now())
+    });
     let mut activity_history: Vec<u64> = vec![0; 24];
     let mut last_activity_tick = Instant::now();
     let mut recent_interval_events: u64 = 0;
@@ -393,6 +455,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 theme,
                 search_query: if search_query.is_empty() && !search_active { None } else { Some(&search_query) },
                 search_active,
+                show_metrics,
+                show_port_modal,
+                port_input: &port_input,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -431,7 +496,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                if show_help || show_warnings || show_incident_modal {
+                // Diálogo interativo para abrir nova porta armadilha (Tecla O)
+                if show_port_modal {
+                    match key.code {
+                        KeyCode::Esc => {
+                            show_port_modal = false;
+                            port_input.clear();
+                        }
+                        KeyCode::Enter => {
+                            let raw = port_input.trim();
+                            if let Ok(port) = raw.parse::<u16>() {
+                                if port == 0 {
+                                    toast_message = Some(("[!] Porta 0 inválida".to_string(), Instant::now()));
+                                } else if trap_ports.contains(&port) {
+                                    let msg = match lang {
+                                        Language::Pt => format!("[!] A porta {} já está ativa no Sentinela", port),
+                                        Language::En => format!("[!] Port {} is already active on Sentinela", port),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
+                                } else {
+                                    match traps::spawn_trap_listener(port, queue_tx.clone()).await {
+                                        Ok(()) => {
+                                            trap_ports.push(port);
+                                            let (svc, _) = traps::classify_port(port);
+                                            let msg = match lang {
+                                                Language::Pt => format!("[🎯 TRAP] Armadilha ativada na porta TCP {} ({})", port, svc),
+                                                Language::En => format!("[🎯 TRAP] Live honeypot active on TCP port {} ({})", port, svc),
+                                            };
+                                            toast_message = Some((msg, Instant::now()));
+                                        }
+                                        Err(e) => {
+                                            let msg = match lang {
+                                                Language::Pt => format!("[!] Falha ao abrir porta {}: {}", port, e),
+                                                Language::En => format!("[!] Failed to open port {}: {}", port, e),
+                                            };
+                                            toast_message = Some((msg, Instant::now()));
+                                        }
+                                    }
+                                }
+                            } else {
+                                let msg = match lang {
+                                    Language::Pt => "[!] Porta inválida! Digite um número entre 1 e 65535".to_string(),
+                                    Language::En => "[!] Invalid port! Enter a number between 1 and 65535".to_string(),
+                                };
+                                toast_message = Some((msg, Instant::now()));
+                            }
+                            show_port_modal = false;
+                            port_input.clear();
+                        }
+                        KeyCode::Backspace => {
+                            port_input.pop();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() && port_input.len() < 5 => {
+                            port_input.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if show_help || show_warnings || show_incident_modal || show_metrics {
                     match key.code {
                         KeyCode::Char('a' | 'A') => {
                             audio_alerts = !audio_alerts;
@@ -451,17 +575,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('i' | 'I') => {
                             show_help = false;
                             show_incident_modal = false;
+                            show_metrics = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('w' | 'W') => {
                             show_warnings = false;
                             show_incident_modal = false;
+                            show_metrics = false;
+                            modal_scroll = 0;
+                        }
+                        KeyCode::Char('m' | 'M') => {
+                            show_metrics = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Esc | KeyCode::Enter => {
                             show_help = false;
                             show_warnings = false;
                             show_incident_modal = false;
+                            show_metrics = false;
                             modal_scroll = 0;
                         }
                         // Banir / Desbanir IP do atacante dentro da modal de raio-X
@@ -525,11 +656,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // Exportar relatório completo de Threat Intel
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f, pcap_f)) => {
-                                    toast_message = Some((
-                                        format!("[✓] Relatório e PCAP exportados: {}, {} e {}", json_f, csv_f, pcap_f),
-                                        Instant::now(),
-                                    ));
+                                Ok((json_f, csv_f, pcap_f, cef_f, syslog_f)) => {
+                                    let msg = match lang {
+                                        Language::Pt => format!("[✓] 5 Ficheiros exportados: {}, {}, {}, {} e {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                        Language::En => format!("[✓] 5 Files exported: {}, {}, {}, {} and {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
                                 }
                                 Err(e) => {
                                     toast_message = Some((format!("[!] Falha na exportação: {}", e), Instant::now()));
@@ -621,19 +753,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                        // Exportar relatório completo de Threat Intel (JSON, CSV e PCAP)
+                        // Exportar relatório completo de Threat Intel (JSON, CSV, PCAP, CEF e Syslog)
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f, pcap_f)) => {
-                                    toast_message = Some((
-                                        format!("[✓] Relatório e PCAP exportados: {}, {} e {}", json_f, csv_f, pcap_f),
-                                        Instant::now(),
-                                    ));
+                                Ok((json_f, csv_f, pcap_f, cef_f, syslog_f)) => {
+                                    let msg = match lang {
+                                        Language::Pt => format!("[✓] 5 Ficheiros exportados: {}, {}, {}, {} e {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                        Language::En => format!("[✓] 5 Files exported: {}, {}, {}, {} and {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                    };
+                                    toast_message = Some((msg, Instant::now()));
                                 }
                                 Err(e) => {
                                     toast_message = Some((format!("[!] Falha na exportação: {}", e), Instant::now()));
                                 }
                             }
+                        }
+                        // Abrir painel executivo de métricas e telemetria SOC
+                        KeyCode::Char('m' | 'M') => {
+                            show_metrics = true;
+                            modal_scroll = 0;
+                        }
+                        // Ativar armadilha honeypot dinâmica em direto (porta TCP)
+                        KeyCode::Char('o' | 'O') => {
+                            show_port_modal = true;
+                            port_input.clear();
                         }
                         KeyCode::Char('a' | 'A') => {
                             audio_alerts = !audio_alerts;
@@ -934,6 +1077,8 @@ fn print_help() {
     println!("\x1b[1mOPÇÕES:\x1b[0m");
     println!("  -h, --help        Apresenta esta mensagem de ajuda");
     println!("  -v, --version     Apresenta a versão do Sentinela");
+    println!("  -c, --config <ARQ>Carrega ficheiro de configuração personalizado (sentinela.toml)");
+    println!("  --init-config     Gera ficheiro sentinela.toml com definições recomendadas");
     println!("  --auto-ban        Ativa bloqueio automático no firewall (Threat Score >= 80)");
     println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
     println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)");
@@ -947,8 +1092,10 @@ fn print_help() {
     println!("  x               Alternar Auto-Ban (bloqueio automático de alto risco)");
     println!("  t               Alternar tema visual (Cyber / Matrix / Midnight / Alto Contraste)");
     println!("  /               Pesquisa forense em direto (filtra por IP, Porta ou Serviço)");
+    println!("  o               Ativar armadilha honeypot dinâmica em direto (porta TCP)");
+    println!("  m               Painel executivo de métricas forenses e telemetria SOC");
     println!("  s               Simulação diagnóstica de ataques no SOC");
-    println!("  e               Exportar Threat Intelligence da sessão (JSON, CSV e PCAP)");
+    println!("  e               Exportar Threat Intel (JSON, CSV, PCAP, CEF e Syslog RFC 5424)");
     println!("  a               Ativar / Desativar alerta sonoro (Bell) e notificações");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
     println!("  w               Consultar auditor de portas vulneráveis abertas");

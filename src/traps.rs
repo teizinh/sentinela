@@ -53,11 +53,11 @@ pub fn classify_port(port: u16) -> (&'static str, &'static str) {
 }
 
 /// Estrutura para enfileirar conexões aceites e processá-las fora do caminho crítico
-struct TrapConnection {
-    attacker_ip: std::net::IpAddr,
-    port: u16,
-    timestamp: String,
-    payload: Option<String>,
+pub struct TrapConnection {
+    pub attacker_ip: std::net::IpAddr,
+    pub port: u16,
+    pub timestamp: String,
+    pub payload: Option<String>,
 }
 
 /// Atualiza o valor de "Hits" da entrada correspondente no log em disco.
@@ -297,12 +297,71 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
     }
 }
 
+/// Tenta associar um listener TCP a uma porta (IPv6 dual-stack com fallback para IPv4)
+/// e inicia a rotina assíncrona de aceitação de sondagens.
+pub async fn spawn_trap_listener(
+    port: u16,
+    queue_tx: tokio::sync::mpsc::UnboundedSender<TrapConnection>,
+) -> Result<(), String> {
+    let listener = match TcpListener::bind(format!("[::]:{}", port)).await {
+        Ok(l) => l,
+        Err(_) => match TcpListener::bind(format!("0.0.0.0:{}", port)).await {
+            Ok(l) => l,
+            Err(e) => return Err(e.to_string()),
+        },
+    };
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((socket, peer_addr)) => {
+                    // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
+                    let attacker_ip = match peer_addr.ip() {
+                        std::net::IpAddr::V6(v6) => v6
+                            .to_ipv4_mapped()
+                            .map(std::net::IpAddr::V4)
+                            .unwrap_or(std::net::IpAddr::V6(v6)),
+                        std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
+                    };
+
+                    // Descarta conexões locais (loopback e IPs locais da própria máquina)
+                    if crate::network::is_host_ip(attacker_ip) {
+                        continue;
+                    }
+
+                    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let q_tx_clone = queue_tx.clone();
+
+                    // Trata a conexão e executa o diálogo interativo do protocolo da porta
+                    tokio::spawn(async move {
+                        let payload = interact_with_probe(socket, port).await;
+
+                        let _ = q_tx_clone.send(TrapConnection {
+                            attacker_ip,
+                            port,
+                            timestamp: now,
+                            payload,
+                        });
+                    });
+                }
+                Err(_) => {
+                    // Em caso de erro transitório de socket (ex.: descritores de ficheiro esgotados),
+                    // pausa brevemente para evitar busy-loop a 100% de CPU
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Inicia armadilhas TCP nas portas fornecidas.
-/// Devolve (portas_ativas, portas_com_erro).
+/// Devolve (portas_ativas, portas_com_erro, transmissor_de_conexoes).
 pub async fn start_traps(
     tx: UnboundedSender<Incident>,
     trap_ports: &[u16],
-) -> (Vec<u16>, Vec<u16>) {
+) -> (Vec<u16>, Vec<u16>, tokio::sync::mpsc::UnboundedSender<TrapConnection>) {
     let mut active = Vec::new();
     let mut failed = Vec::new();
 
@@ -338,66 +397,13 @@ pub async fn start_traps(
     });
 
     for &port in trap_ports {
-        // Tenta bind IPv6 dual-stack ([::]) para aceitar IPv4 e IPv6;
-        // Se falhar (ex.: IPv6 desativado no kernel), faz fallback para IPv4 (0.0.0.0)
-        let listener_res = match TcpListener::bind(format!("[::]:{}", port)).await {
-            Ok(l) => Ok(l),
-            Err(_) => TcpListener::bind(format!("0.0.0.0:{}", port)).await,
-        };
-
-        match listener_res {
-            Ok(listener) => {
-                active.push(port);
-                let q_tx = queue_tx.clone();
-                tokio::spawn(async move {
-                    loop {
-                        match listener.accept().await {
-                            Ok((socket, peer_addr)) => {
-                                // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
-                                let attacker_ip = match peer_addr.ip() {
-                                    std::net::IpAddr::V6(v6) => v6
-                                        .to_ipv4_mapped()
-                                        .map(std::net::IpAddr::V4)
-                                        .unwrap_or(std::net::IpAddr::V6(v6)),
-                                    std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
-                                };
-
-                                // Descarta conexões locais (loopback e IPs locais da própria máquina)
-                                if crate::network::is_host_ip(attacker_ip) {
-                                    continue;
-                                }
-
-                                let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                                let q_tx_clone = q_tx.clone();
-
-                                // Trata a conexão e executa o diálogo interativo do protocolo da porta
-                                tokio::spawn(async move {
-                                    let payload = interact_with_probe(socket, port).await;
-
-                                    let _ = q_tx_clone.send(TrapConnection {
-                                        attacker_ip,
-                                        port,
-                                        timestamp: now,
-                                        payload,
-                                    });
-                                });
-                            }
-                            Err(_) => {
-                                // Em caso de erro transitório de socket (ex.: descritores de ficheiro esgotados),
-                                // pausa brevemente para evitar busy-loop a 100% de CPU
-                                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                            }
-                        }
-                    }
-                });
-            }
-            Err(_) => {
-                failed.push(port);
-            }
+        match spawn_trap_listener(port, queue_tx.clone()).await {
+            Ok(()) => active.push(port),
+            Err(_) => failed.push(port),
         }
     }
 
-    (active, failed)
+    (active, failed, queue_tx)
 }
 
 #[cfg(test)]

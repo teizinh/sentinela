@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.5-green.svg" alt="Version 0.3.5">
+  <img src="https://img.shields.io/badge/Version-0.3.6-green.svg" alt="Version 0.3.6">
 </p>
 
 ---
@@ -97,11 +97,29 @@ Press `b` in the dashboard or within the inspection modal to immediately block t
 ### Audio & desktop alert toggle
 Press `a` to toggle immediate audio terminal bell (`\x07`) sounds and high-urgency OS desktop notifications for incoming Critical and Port Sweep alerts.
 
-### Threat intelligence & Wireshark PCAP capture export
-Press `e` at any time to dump the complete session threat intelligence:
-- `sentinela_report_YYYY-MM-DD_HH-MM-SS.json`: Machine-readable SOC report including system metadata, active trap ports, unique attacker counts, whitelist state, MITRE ATT&CK techniques, and threat scores.
-- `sentinela_report_YYYY-MM-DD_HH-MM-SS.csv`: Tabular spreadsheet format for forensic analysis.
-- `sentinela_capture_YYYY-MM-DD_HH-MM-SS.pcap`: Fully valid libpcap binary packet trace containing synthesized Ethernet/IP/TCP frames and payloads for every captured incident — open and analyze directly in **Wireshark** or **tcpdump**!
+### Threat intelligence & SIEM multi-format export
+Press `e` at any time to dump complete session threat intelligence in 5 industry-standard formats:
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.json`: Full machine-readable SOC audit report including system metadata, active honeypots, whitelist, MITRE tactics, and incident scoring.
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.csv`: Tabular forensic format for spreadsheet analysis.
+- `sentinela_capture_YYYY-MM-DD_HH-MM-SS.pcap`: Fully valid libpcap binary packet trace containing synthesized Ethernet/IP/TCP frames and payloads for every captured probe — inspectable directly in **Wireshark** and **tcpdump**!
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.cef`: Micro Focus ArcSight Common Event Format (CEF) compatible with **Splunk**, **Wazuh**, **Elastic**, and **QRadar**.
+- `sentinela_report_YYYY-MM-DD_HH-MM-SS.syslog`: Standard RFC 5424 structured syslog stream ready for **rsyslog**, **Logstash**, and **Graylog** ingestion.
+
+### Dynamic live honeypot trap deployment
+Press `o` in the dashboard to open the live trap spawner prompt. Type any TCP port (e.g. `3306`, `5432`, `8000`) and press `Enter`. Sentinela immediately binds an asynchronous listener dual-stack (IPv4 & IPv6) and attaches protocol handshake emulation without restarting the monitoring daemon.
+
+### Executive SOC metrics & telemetry dashboard
+Press `m` to toggle the dedicated Metrics and Forensic Analytics modal:
+- **Target Port Distribution:** Real-time proportional ASCII histogram of top attacked ports.
+- **MITRE ATT&CK Matrix:** Ranked breakdown of observed adversarial tactics (Discovery, Initial Access, Lateral Movement).
+- **Severity Breakdown:** Incident count across Critical, Sweep, Medium, and Alert tiers.
+- **Active Defense Posture:** Live count of active firewall drops, whitelisted assets, and raw kernel packet sniffer status.
+
+### Persistent TOML configuration
+Sentinela automatically looks for configuration in `./sentinela.toml` or `~/.config/sentinela/config.toml`.
+- Run `sentinela --init-config` to generate a well-commented template in your current directory.
+- Pass a custom configuration file anytime with `--config <PATH>` or `-c <PATH>`.
+- Configure default trap ports, firewall auto-ban thresholds, trusted IP whitelist, webhook URLs, and visual themes persistently.
 
 ### Visual dashboard themes
 Press `t` to cycle through 4 distinct visual themes:
@@ -165,8 +183,10 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 | `x` | Toggle automated firewall auto-ban for high-threat IPs (Threat Score ≥ 80) |
 | `t` | Cycle visual dashboard themes (Cyber SOC / Matrix / Midnight / High Contrast) |
 | `/` | Live interactive search & filter by IP, port or service keyword |
+| `o` | Spawn dynamic live honeypot trap on specified TCP port |
+| `m` | Executive SOC metrics & forensic telemetry analytics panel |
 | `s` | Inject diagnostic test attack simulation sequence into SOC |
-| `e` | Export session Threat Intel report (JSON, CSV, and Wireshark PCAP) |
+| `e` | Export session Threat Intel (JSON, CSV, PCAP, CEF, and RFC 5424 Syslog) |
 | `a` | Toggle audio bell alarm and desktop notifications |
 | `i` | Open / close help modal |
 | `w` | Open / close port security audit |
