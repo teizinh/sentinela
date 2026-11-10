@@ -6,6 +6,66 @@ pub enum Language {
     En,
 }
 
+/// Temas visuais da dashboard do Sentinela
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Theme {
+    Cyber,
+    Matrix,
+    Midnight,
+    HighContrast,
+}
+
+impl Theme {
+    pub fn next(self) -> Self {
+        match self {
+            Theme::Cyber => Theme::Matrix,
+            Theme::Matrix => Theme::Midnight,
+            Theme::Midnight => Theme::HighContrast,
+            Theme::HighContrast => Theme::Cyber,
+        }
+    }
+
+    pub fn label(self, lang: Language) -> &'static str {
+        match (self, lang) {
+            (Theme::Cyber, Language::Pt) => "Cyber SOC",
+            (Theme::Cyber, Language::En) => "Cyber SOC",
+            (Theme::Matrix, Language::Pt) => "Matrix Hacker",
+            (Theme::Matrix, Language::En) => "Matrix Hacker",
+            (Theme::Midnight, Language::Pt) => "Midnight Violet",
+            (Theme::Midnight, Language::En) => "Midnight Violet",
+            (Theme::HighContrast, Language::Pt) => "Alto Contraste",
+            (Theme::HighContrast, Language::En) => "High Contrast",
+        }
+    }
+
+    pub fn border_color(self) -> ratatui::style::Color {
+        match self {
+            Theme::Cyber => ratatui::style::Color::Cyan,
+            Theme::Matrix => ratatui::style::Color::Green,
+            Theme::Midnight => ratatui::style::Color::Rgb(100, 149, 237),
+            Theme::HighContrast => ratatui::style::Color::White,
+        }
+    }
+
+    pub fn header_title_color(self) -> ratatui::style::Color {
+        match self {
+            Theme::Cyber => ratatui::style::Color::Yellow,
+            Theme::Matrix => ratatui::style::Color::LightGreen,
+            Theme::Midnight => ratatui::style::Color::Magenta,
+            Theme::HighContrast => ratatui::style::Color::Yellow,
+        }
+    }
+
+    pub fn footer_color(self) -> ratatui::style::Color {
+        match self {
+            Theme::Cyber => ratatui::style::Color::Cyan,
+            Theme::Matrix => ratatui::style::Color::Green,
+            Theme::Midnight => ratatui::style::Color::Rgb(147, 112, 219),
+            Theme::HighContrast => ratatui::style::Color::White,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SysInfo {
     pub distro: String,
@@ -349,5 +409,15 @@ mod tests {
         let dump = format_hexdump("GET /admin");
         assert!(dump.starts_with("0000:  47 45 54 20 2f 61 64 6d"));
         assert!(dump.ends_with("|GET /admin|"));
+    }
+
+    #[test]
+    fn test_theme_cycle() {
+        let theme = Theme::Cyber;
+        assert_eq!(theme.next(), Theme::Matrix);
+        assert_eq!(theme.next().next(), Theme::Midnight);
+        assert_eq!(theme.next().next().next(), Theme::HighContrast);
+        assert_eq!(theme.next().next().next().next(), Theme::Cyber);
+        assert_eq!(Theme::Matrix.label(Language::Pt), "Matrix Hacker");
     }
 }

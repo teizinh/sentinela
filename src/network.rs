@@ -556,18 +556,19 @@ pub fn unban_ip(_ip: &str) -> Result<(), String> {
     Err("Bloqueio cirúrgico de IP suportado em Linux e Windows".to_string())
 }
 
-/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON e CSV.
+/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON, CSV e captura PCAP (Wireshark).
 pub fn export_threat_report(
     incidents: &[Incident],
     banned_ips: &std::collections::HashSet<String>,
     whitelisted_ips: &std::collections::HashSet<String>,
     sys_info: &SysInfo,
     _lang: Language,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, String), String> {
     let now = chrono::Local::now();
     let base_name = now.format("sentinela_report_%Y-%m-%d_%H-%M-%S").to_string();
     let json_name = format!("{}.json", base_name);
     let csv_name = format!("{}.csv", base_name);
+    let pcap_name = format!("{}.pcap", base_name);
 
     #[derive(serde::Serialize)]
     struct ThreatReport<'a> {
@@ -629,7 +630,9 @@ pub fn export_threat_report(
     }
     std::fs::write(&csv_name, csv).map_err(|e| format!("Erro ao gravar CSV: {}", e))?;
 
-    Ok((json_name, csv_name))
+    crate::pcap::write_pcap_file(&pcap_name, incidents)?;
+
+    Ok((json_name, csv_name, pcap_name))
 }
 
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
@@ -1445,11 +1448,12 @@ mod tests {
 
         let res = export_threat_report(&incidents, &banned, &whitelisted, &sys_info, Language::Pt);
         assert!(res.is_ok());
-        let (json_file, csv_file) = res.unwrap();
+        let (json_file, csv_file, pcap_file) = res.unwrap();
 
         // Verifica existência e conteúdo dos ficheiros
         assert!(std::path::Path::new(&json_file).exists());
         assert!(std::path::Path::new(&csv_file).exists());
+        assert!(std::path::Path::new(&pcap_file).exists());
 
         let json_content = std::fs::read_to_string(&json_file).unwrap();
         assert!(json_content.contains("192.168.1.150"));
@@ -1465,6 +1469,7 @@ mod tests {
         // Limpeza dos ficheiros de teste
         let _ = std::fs::remove_file(json_file);
         let _ = std::fs::remove_file(csv_file);
+        let _ = std::fs::remove_file(pcap_file);
     }
 
     #[tokio::test]

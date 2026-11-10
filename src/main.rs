@@ -1,5 +1,6 @@
 mod models;
 mod network;
+mod pcap;
 mod scanner;
 mod traps;
 mod ui;
@@ -9,7 +10,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use models::{Incident, Language, PortWarning, SeverityFilter};
+use models::{Incident, Language, PortWarning, SeverityFilter, Theme};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     collections::{HashMap, HashSet},
@@ -53,7 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Opções de linha de comandos: --auto-ban, --webhook <URL>, --whitelist <IPS>
+    // Opções de linha de comandos: --auto-ban, --webhook <URL>, --whitelist <IPS>, --theme <THEME>, --simulate
     let auto_ban_cli = raw_args.iter().any(|a| a == "--auto-ban");
     let mut auto_ban = auto_ban_cli;
 
@@ -61,6 +62,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+
+    let mut theme = Theme::Cyber;
+    if let Ok(env_theme) = env::var("SENTINELA_THEME") {
+        match env_theme.to_lowercase().as_str() {
+            "matrix" => theme = Theme::Matrix,
+            "midnight" => theme = Theme::Midnight,
+            "contrast" | "highcontrast" | "high-contrast" => theme = Theme::HighContrast,
+            _ => {}
+        }
+    }
+
+    let simulate_on_startup = raw_args.iter().any(|a| a == "--simulate" || a == "--test-mode");
 
     let mut whitelisted_ips: HashSet<String> = HashSet::new();
     if let Ok(env_white) = env::var("SENTINELA_WHITELIST") {
@@ -83,6 +96,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if !clean.is_empty() {
                     whitelisted_ips.insert(clean.to_string());
                 }
+            }
+            i += 2;
+        } else if raw_args[i] == "--theme" && i + 1 < raw_args.len() {
+            match raw_args[i + 1].to_lowercase().as_str() {
+                "matrix" => theme = Theme::Matrix,
+                "midnight" => theme = Theme::Midnight,
+                "contrast" | "highcontrast" | "high-contrast" => theme = Theme::HighContrast,
+                _ => {}
             }
             i += 2;
         } else {
@@ -115,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Tenta iniciar o scanner de pacotes raw (requer CAP_NET_RAW / sudo).
     // Se falhar por falta de permissão, continua apenas com deteção de ligações completas.
-    let scanner_active = scanner::start_packet_scanner(tx, trap_ports.clone());
+    let scanner_active = scanner::start_packet_scanner(tx.clone(), trap_ports.clone());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -139,6 +160,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut scroll_offset: usize = 0;
     let mut modal_scroll: u16 = 0;
     let mut severity_filter = SeverityFilter::All;
+    let mut search_active = false;
+    let mut search_query = String::new();
+
+    let simulate_attack = |target_tx: &mpsc::UnboundedSender<Incident>| {
+        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let _ = target_tx.send(Incident {
+            timestamp: now_str.clone(),
+            ip: "198.51.100.42".to_string(),
+            port: 2222,
+            service: "SSH Honeypot".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "Simulado".to_string(),
+            city: "Security Lab".to_string(),
+            isp: "Test Runner".to_string(),
+            rdns: Some("simulated-scanner.lab".to_string()),
+            payload: Some("SSH-2.0-libssh_0.9.6".to_string()),
+            threat_score: 85,
+            hit_count: 1,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str.clone(),
+            ip: "203.0.113.88".to_string(),
+            port: 8080,
+            service: "HTTP Honeypot".to_string(),
+            severity: "MÉDIO".to_string(),
+            country: "Simulado".to_string(),
+            city: "Security Lab".to_string(),
+            isp: "Botnet Crawler".to_string(),
+            rdns: None,
+            payload: Some("GET /wp-admin/setup-config.php HTTP/1.1".to_string()),
+            threat_score: 55,
+            hit_count: 1,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str,
+            ip: "192.0.2.14".to_string(),
+            port: 0,
+            service: "Port Sweep".to_string(),
+            severity: "SWEEP".to_string(),
+            country: "Simulado".to_string(),
+            city: "Recon Probe".to_string(),
+            isp: "Nmap Scanner".to_string(),
+            rdns: None,
+            payload: None,
+            threat_score: 90,
+            hit_count: 1,
+        });
+    };
+
+    if simulate_on_startup {
+        simulate_attack(&tx);
+    }
 
     // Mapa de hit_count por IP (acumula ao longo da sessão)
     let mut ip_hit_counts: HashMap<String, usize> = HashMap::new();
@@ -317,6 +390,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 webhook_active: webhook_url.is_some(),
                 activity_history: &activity_history,
                 animation_tick,
+                theme,
+                search_query: if search_query.is_empty() && !search_active { None } else { Some(&search_query) },
+                search_active,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -332,6 +408,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if key.modifiers.contains(event::KeyModifiers::CONTROL) {
                         break;
                     }
+                }
+
+                // Modo de introdução da pesquisa forense (Tecla /)
+                if search_active {
+                    match key.code {
+                        KeyCode::Esc => {
+                            search_active = false;
+                            search_query.clear();
+                        }
+                        KeyCode::Enter => {
+                            search_active = false;
+                        }
+                        KeyCode::Backspace => {
+                            search_query.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            search_query.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
                 }
 
                 if show_help || show_warnings || show_incident_modal {
@@ -428,9 +525,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // Exportar relatório completo de Threat Intel
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f)) => {
+                                Ok((json_f, csv_f, pcap_f)) => {
                                     toast_message = Some((
-                                        format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
+                                        format!("[✓] Relatório e PCAP exportados: {}, {} e {}", json_f, csv_f, pcap_f),
                                         Instant::now(),
                                     ));
                                 }
@@ -524,12 +621,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                        // Exportar relatório completo de Threat Intel (JSON e CSV)
+                        // Exportar relatório completo de Threat Intel (JSON, CSV e PCAP)
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f)) => {
+                                Ok((json_f, csv_f, pcap_f)) => {
                                     toast_message = Some((
-                                        format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
+                                        format!("[✓] Relatório e PCAP exportados: {}, {} e {}", json_f, csv_f, pcap_f),
                                         Instant::now(),
                                     ));
                                 }
@@ -633,6 +730,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             };
                             toast_message = Some((msg.to_string(), Instant::now()));
+                        }
+                        // Alternar tema visual (Cyber -> Matrix -> Midnight -> HighContrast)
+                        KeyCode::Char('t' | 'T') => {
+                            theme = theme.next();
+                            let msg = match lang {
+                                Language::Pt => format!("[🎨] Tema alterado: {}", theme.label(lang)),
+                                Language::En => format!("[🎨] Theme changed: {}", theme.label(lang)),
+                            };
+                            toast_message = Some((msg, Instant::now()));
+                        }
+                        // Abrir pesquisa forense em direto
+                        KeyCode::Char('/') => {
+                            search_active = true;
+                        }
+                        // Injetar simulação de ataques para demonstração e diagnóstico
+                        KeyCode::Char('s' | 'S') => {
+                            simulate_attack(&tx);
+                            let msg = match lang {
+                                Language::Pt => "[⚡] Simulação: 3 incidentes de teste injetados no SOC".to_string(),
+                                Language::En => "[⚡] Simulation: 3 test incidents injected into SOC".to_string(),
+                            };
+                            toast_message = Some((msg, Instant::now()));
                         }
                         // Filtro de severidade
                         KeyCode::Char('f' | 'F') => {
@@ -817,14 +936,19 @@ fn print_help() {
     println!("  -v, --version     Apresenta a versão do Sentinela");
     println!("  --auto-ban        Ativa bloqueio automático no firewall (Threat Score >= 80)");
     println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
-    println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)\n");
+    println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)");
+    println!("  --theme <TEMA>    Tema visual inicial: cyber, matrix, midnight, contrast");
+    println!("  --simulate        Injeta incidentes simulados no arranque para testes e demos\n");
     println!("\x1b[1mATALHOS NO DASHBOARD:\x1b[0m");
     println!("  q / Ctrl+C      Sair do Sentinela e restaurar terminal");
     println!("  ↵ (Enter)       Raio-X forense detalhado do incidente selecionado");
     println!("  b               Banir / Desbanir IP do atacante (DROP firewall)");
     println!("  u               Adicionar / Remover IP selecionado da Whitelist");
     println!("  x               Alternar Auto-Ban (bloqueio automático de alto risco)");
-    println!("  e               Exportar Threat Intelligence da sessão (JSON + CSV)");
+    println!("  t               Alternar tema visual (Cyber / Matrix / Midnight / Alto Contraste)");
+    println!("  /               Pesquisa forense em direto (filtra por IP, Porta ou Serviço)");
+    println!("  s               Simulação diagnóstica de ataques no SOC");
+    println!("  e               Exportar Threat Intelligence da sessão (JSON, CSV e PCAP)");
     println!("  a               Ativar / Desativar alerta sonoro (Bell) e notificações");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
     println!("  w               Consultar auditor de portas vulneráveis abertas");

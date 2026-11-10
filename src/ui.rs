@@ -1,4 +1,4 @@
-use crate::models::{Incident, Language, PortWarning, SeverityFilter, SysInfo};
+use crate::models::{Incident, Language, PortWarning, SeverityFilter, SysInfo, Theme};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -37,6 +37,9 @@ pub struct UiContext<'a> {
     pub webhook_active: bool,
     pub activity_history: &'a [u64],
     pub animation_tick: u64,
+    pub theme: Theme,
+    pub search_query: Option<&'a str>,
+    pub search_active: bool,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -233,6 +236,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         webhook_active,
         activity_history,
         animation_tick,
+        theme,
+        search_query,
+        search_active,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -451,7 +457,12 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         )
-        .block(Block::default().borders(Borders::ALL).title(title_status));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_color()))
+                .title(title_status),
+        );
 
     if let Some(ref top) = top_chunks {
         f.render_widget(header_p, top[0]);
@@ -472,8 +483,13 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             Language::En => " System ",
         };
         let sys_p = Paragraph::new(sys_box_text)
-            .style(Style::default().fg(Color::Cyan))
-            .block(Block::default().borders(Borders::ALL).title(sys_title));
+            .style(Style::default().fg(theme.border_color()))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border_color()))
+                    .title(sys_title),
+            );
         f.render_widget(sys_p, top[1]);
 
         if top.len() > 2 {
@@ -482,9 +498,14 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 Language::En => " Activity (24s) ",
             };
             let spark_widget = Sparkline::default()
-                .block(Block::default().borders(Borders::ALL).title(spark_title))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.border_color()))
+                        .title(spark_title),
+                )
                 .data(activity_history)
-                .style(Style::default().fg(Color::Yellow));
+                .style(Style::default().fg(theme.header_title_color()));
             f.render_widget(spark_widget, top[2]);
         }
     } else {
@@ -503,10 +524,21 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     });
     let header_row = Row::new(header_cells).height(1).bottom_margin(1);
 
-    // Aplica filtro de severidade e scroll
+    // Aplica filtro de severidade, busca forense de texto e scroll
+    let search_clean = search_query.unwrap_or("").trim().to_lowercase();
     let filtered: Vec<&Incident> = incidents
         .iter()
         .filter(|i| severity_filter.matches(&i.severity))
+        .filter(|i| {
+            if search_clean.is_empty() {
+                true
+            } else {
+                i.ip.to_lowercase().contains(&search_clean)
+                    || i.service.to_lowercase().contains(&search_clean)
+                    || i.port.to_string().starts_with(&search_clean)
+                    || i.severity.to_lowercase().contains(&search_clean)
+            }
+        })
         .collect();
 
     let table_inner_w = chunks[1].width.saturating_sub(2) as usize;
@@ -628,7 +660,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         Row::new(cells).style(row_style)
     });
 
-    let filter_label_display = severity_filter.label(lang);
+    let filter_label_display = if !search_clean.is_empty() {
+        format!("{}: /{}", severity_filter.label(lang), search_clean)
+    } else {
+        severity_filter.label(lang).to_string()
+    };
     let scroll_info = if filtered.len() > scroll_offset {
         format!(" [{}/{}]", scroll_offset + 1, filtered.len())
     } else {
@@ -649,38 +685,47 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     let table = Table::new(rows, col_constraints)
         .header(header_row)
-        .block(Block::default().borders(Borders::ALL).title(table_title));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_color()))
+                .title(table_title),
+        );
 
     f.render_widget(table, chunks[1]);
 
     // 3. Rodapé Responsivo com Atalhos & Notificações
-    let footer_text = if let Some(toast) = toast_message {
+    let footer_text = if search_active {
+        format!(" 🔍 BUSCA FORENSE: /{}█  [Enter: Confirmar | Esc: Cancelar/Limpar]", search_query.unwrap_or(""))
+    } else if let Some(toast) = toast_message {
         toast.to_string()
     } else if screen_width < 60 {
         match lang {
-            Language::Pt => " [↵]Raio-X [B]Ban [U]White [X]Auto [E]Export [Q]Sair".to_string(),
-            Language::En => " [↵]Inspect [B]Ban [U]White [X]Auto [E]Export [Q]Quit".to_string(),
+            Language::Pt => " [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [Q]Sair".to_string(),
+            Language::En => " [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [Q]Quit".to_string(),
         }
-    } else if screen_width < 90 {
+    } else if screen_width < 95 {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Ban | [U] Whitelist | [X] Auto | [E] Exportar | [K] Kill | [W] Avisos | [I] Ajuda | [Q] Sair".to_string(),
-            Language::En => " [↵] Inspect | [B] Ban | [U] Whitelist | [X] Auto | [E] Export | [K] Kill | [W] Warn | [I] Help | [Q] Quit".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [S] Sim | [I] Ajuda | [Q] Sair".to_string(),
+            Language::En => " [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [S] Sim | [I] Help | [Q] Quit".to_string(),
         }
     } else {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Banir IP | [U] Whitelist | [X] Auto-Ban | [E] Exportar | [A] Alertas | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [Q] Sair ".to_string(),
-            Language::En => " [↵] Deep Inspection | [B] Ban IP | [U] Whitelist | [X] Auto-Ban | [E] Export | [A] Alerts | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [Q] Quit ".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [W] Avisos | [I] Manual | [Q] Sair ".to_string(),
+            Language::En => " [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [W] Warnings | [I] Manual | [Q] Quit ".to_string(),
         }
     };
 
-    let footer_style = if toast_message.is_some() {
+    let footer_style = if search_active || toast_message.is_some() {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.footer_color())
     };
 
     let footer_inner_w = chunks[2].width.saturating_sub(2) as usize;
-    let displayed_footer = if is_mobile || toast_message.is_some() {
+    let displayed_footer = if search_active {
+        footer_text
+    } else if is_mobile || toast_message.is_some() {
         marquee_scroll(&footer_text, footer_inner_w, animation_tick)
     } else {
         footer_text
@@ -688,7 +733,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     let footer = Paragraph::new(displayed_footer)
         .style(footer_style)
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_color())),
+        );
     f.render_widget(footer, chunks[2]);
 
     let (modal_w, modal_h) = if is_mobile { (96, 92) } else { (88, 85) };
@@ -789,6 +838,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [↵]   Raio-X: Inspeção forense aprofundada do incidente selecionado.\n\
                        [B]   Banir/Desbanir: Bloqueio cirúrgico no firewall (DROP).\n\
                       [X]   Auto-Ban: Alterna bloqueio automatico de ameacas (Score >= 80).\n\
+                      [T]   Tema: Alterna esquema de cores (Cyber SOC / Matrix / Midnight / Alto Contraste).\n\
+                      [/]   Buscar: Filtra incidentes em direto por IP, Porta ou Servico.\n\
+                      [S]   Simular: Injeta ataques de teste para demonstracao e diagnostico.\n\
                       [U]   Whitelist: Adiciona/Remove IP da lista de confianca (imune a auto-ban).\n\
                        [E]   Exportar: Exporta Threat Intel completa da sessão (JSON + CSV).\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
@@ -827,6 +879,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [↵]   Forensic X-Ray: Deep inspection modal of selected incident.\n\
                        [B]   Ban/Unban: Surgical firewall drop rule for attacker IP.\n\
                       [X]   Auto-Ban: Toggle automated blocking of high-threat IPs (Score >= 80).\n\
+                      [T]   Theme: Toggle color palette (Cyber SOC / Matrix / Midnight / High Contrast).\n\
+                      [/]   Search: Real-time search filter by IP, Port or Service.\n\
+                      [S]   Simulate: Inject diagnostic test attacks into SOC.\n\
                       [U]   Whitelist: Add/Remove IP from trusted whitelist (immune to auto-ban).\n\
                        [E]   Export: Dump Threat Intel session report to JSON and CSV.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
