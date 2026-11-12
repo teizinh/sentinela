@@ -110,9 +110,9 @@ rm -rf "$DEB_ROOT"
 if [ "$TARGET_NAME" = "x86_64-unknown-linux-gnu" ] && [ -f "${ASSET_NAME}.deb" ]; then
     if command -v alien >/dev/null 2>&1; then
         if [ "$(id -u)" -eq 0 ]; then
-            alien --to-rpm --scripts "${ASSET_NAME}.deb"
+            alien --to-rpm --scripts --keep-version "${ASSET_NAME}.deb"
         else
-            sudo -n alien --to-rpm --scripts "${ASSET_NAME}.deb"
+            sudo -n alien --to-rpm --scripts --keep-version "${ASSET_NAME}.deb"
         fi
         mv sentinela-*.rpm "${ASSET_NAME}.rpm" 2>/dev/null || true
         if [ -f "${ASSET_NAME}.rpm" ]; then
