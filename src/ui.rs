@@ -338,8 +338,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         }
     } else {
         match lang {
-            Language::Pt => format!("[!] Erro portas: {:?}", failed_traps),
-            Language::En => format!("[!] Port errors: {:?}", failed_traps),
+            Language::Pt => format!("[!] Portas ocupadas: {:?} (Usa [C]+[K] p/ fechar)", failed_traps),
+            Language::En => format!("[!] Ports in use: {:?} (Use [C]+[K] to kill)", failed_traps),
         }
     };
 
@@ -981,6 +981,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • ATALHOS:\n\
                        [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
                        [C]   Sockets: Inspecionar conexões e portas ativas no sistema em tempo real.\n\
+                       [K]   Kill: Termina processo do socket selecionado no Inspetor [C].\n\
+                       [G]   GeoIP: Distribuição geográfica de ameaças por país e ISP.\n\
                        [↵]   Raio-X: Inspeção forense aprofundada do incidente selecionado.\n\
                        [B]   Banir/Desbanir: Bloqueio cirúrgico no firewall (DROP).\n\
                       [X]   Auto-Ban: Alterna bloqueio automatico de ameacas (Score >= 80).\n\
@@ -1028,6 +1030,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • SHORTCUTS:\n\
                        [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
                        [C]   Sockets: Live inspection of active network connections and processes.\n\
+                       [K]   Kill: Surgically terminate selected socket process in [C] inspector.\n\
+                       [G]   GeoIP: Threat geographic distribution by country and ISP.\n\
                        [↵]   Forensic X-Ray: Deep inspection modal of selected incident.\n\
                        [B]   Ban/Unban: Surgical firewall drop rule for attacker IP.\n\
                       [X]   Auto-Ban: Toggle automated blocking of high-threat IPs (Score >= 80).\n\

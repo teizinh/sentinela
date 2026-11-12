@@ -1257,6 +1257,53 @@ pub fn kill_process_by_pid(pid: u32) -> Result<String, String> {
     }
 }
 
+/// Deteta se existem outras instâncias do executável Sentinela em execução no sistema.
+pub fn find_other_sentinela_instances() -> Vec<u32> {
+    let mut instances = Vec::new();
+    let my_pid = std::process::id();
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if let Ok(pid) = name_str.parse::<u32>() {
+                    if pid == my_pid || pid <= 1 {
+                        continue;
+                    }
+                    let comm_path = entry.path().join("comm");
+                    if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+                        let comm_trimmed = comm.trim();
+                        if comm_trimmed == "sentinela" {
+                            instances.push(pid);
+                            continue;
+                        }
+                    }
+                    // Verificação secundária via cmdline caso o processo tenha sido invocado com caminho direto
+                    let cmdline_path = entry.path().join("cmdline");
+                    if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+                        if let Some(first_arg) = cmdline.split('\0').next() {
+                            if first_arg.ends_with("/sentinela") || first_arg == "sentinela" {
+                                instances.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Em outras plataformas
+    }
+
+    instances.sort_unstable();
+    instances.dedup();
+    instances
+}
+
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
 pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned: bool) {
     let url = webhook_url.trim().to_string();
@@ -2167,6 +2214,15 @@ mod tests {
         assert!(kill_process_by_pid(1).is_err());
         // Sentinela não se pode auto-matar
         assert!(kill_process_by_pid(std::process::id()).is_err());
+    }
+
+    #[test]
+    fn test_find_other_sentinela_instances() {
+        let instances = find_other_sentinela_instances();
+        let my_pid = std::process::id();
+        assert!(!instances.contains(&my_pid));
+        assert!(!instances.contains(&0));
+        assert!(!instances.contains(&1));
     }
 
     #[test]

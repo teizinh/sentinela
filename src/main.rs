@@ -17,7 +17,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     error::Error,
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
@@ -192,6 +192,62 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("O dashboard requer um terminal: usa ssh -t host sentinela".into());
+    }
+
+    let kill_existing_cli = raw_args
+        .iter()
+        .any(|a| a == "-k" || a == "--kill-existing" || a == "--replace");
+
+    // Deteção de instâncias concorrentes do Sentinela
+    let other_instances = network::find_other_sentinela_instances();
+    if !other_instances.is_empty() {
+        let pids_str = other_instances
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        if kill_existing_cli {
+            println!("\x1b[1;33m[!] A fechar instância(s) anterior(es) do Sentinela (PID: {})...\x1b[0m", pids_str);
+            for &pid in &other_instances {
+                let _ = network::kill_process_by_pid(pid);
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            println!("\x1b[1;32m[✓] Instâncias anteriores terminadas com sucesso.\x1b[0m");
+        } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            println!("\n\x1b[1;33m[!] AVISO: Foi detetada outra instância do Sentinela em execução! (PID: {})\x1b[0m", pids_str);
+            println!("\x1b[1;37m    As portas de armadilha (honeypot) podem estar ocupadas por essa instância.\x1b[0m");
+            print!("\x1b[1;36m[?] Desejas fechar a(s) instância(s) anterior(es) e continuar? [S/n]: \x1b[0m");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let answer = input.trim().to_lowercase();
+
+            if answer.is_empty() || answer == "s" || answer == "sim" || answer == "y" || answer == "yes" {
+                for &pid in &other_instances {
+                    match network::kill_process_by_pid(pid) {
+                        Ok(_) => println!("\x1b[1;32m[✓] Processo PID {} terminado.\x1b[0m", pid),
+                        Err(e) => eprintln!("\x1b[1;31m[!] Aviso ao terminar PID {}: {}\x1b[0m", pid, e),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                println!("\x1b[1;32m[✓] Portas libertadas com sucesso. A iniciar o Sentinela...\x1b[0m");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            } else {
+                print!("\x1b[1;33m[?] Desejas iniciar o Sentinela mesmo assim (sem as portas ocupadas)? [s/N]: \x1b[0m");
+                io::stdout().flush()?;
+
+                let mut input2 = String::new();
+                io::stdin().read_line(&mut input2)?;
+                let answer2 = input2.trim().to_lowercase();
+
+                if answer2 != "s" && answer2 != "sim" && answer2 != "y" && answer2 != "yes" {
+                    println!("\x1b[1;37m[-] Operação cancelada. Sentinela encerrado.\x1b[0m");
+                    return Ok(());
+                }
+            }
+        }
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Incident>();
@@ -1210,7 +1266,8 @@ fn print_help() {
     println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
     println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)");
     println!("  --theme <TEMA>    Tema visual inicial: cyber, matrix, midnight, contrast");
-    println!("  --simulate        Injeta incidentes simulados no arranque para testes e demos\n");
+    println!("  --simulate        Injeta incidentes simulados no arranque para testes e demos");
+    println!("  -k, --kill-existing Termina automaticamente instâncias anteriores em conflito\n");
     println!("\x1b[1mATALHOS NO DASHBOARD:\x1b[0m");
     println!("  q / Ctrl+C      Sair do Sentinela e restaurar terminal");
     println!("  ↵ (Enter)       Raio-X forense detalhado do incidente selecionado");

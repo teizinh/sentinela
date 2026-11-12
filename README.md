@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.9-green.svg" alt="Version 0.3.9">
+  <img src="https://img.shields.io/badge/Version-0.3.10-green.svg" alt="Version 0.3.10">
 </p>
 
 ---
@@ -20,8 +20,9 @@ It does not require a separate server, database or cloud account. It runs as a s
 
 ---
 
-## Security Operations & Threat Intel (v0.3.9)
+## Security Operations & Threat Intel (v0.3.10)
 
+- **🔄 Concurrent Instance Detection & Conflict Resolution:** Startup watchdog scans `/proc` for existing Sentinela processes. Prompts the user interactively (`[S/n]`) to gracefully terminate previous instances and reclaim honeypot ports, or automatically with `-k` / `--kill-existing`.
 - **🌍 [G] GeoIP & Attack Origins Modal:** Interactive SOC distribution modal featuring ASCII bar charts of top attacking nations (with flag mappings) and top attacking ISPs/ASNs.
 - **🛡️ ARP Cache Poisoning & MITM Guard:** Continuous `/proc/net/arp` watchdog that alerts on rogue MAC changes or gateway cloning attacks (mapped to MITRE ATT&CK `T1557.002`).
 - **🎛️ 2-Line Categorized Action Footer:** Responsive control panel organizing quick-response defensive actions (`[↵]`, `[B]`, `[U]`, `[X]`, `[G]`, `[C]`, `[K]`) and analysis tools (`[M]`, `[O]`, `[T]`, `[/]`, `[E]`, `[S]`, `[I]`, `[Q]`) with styled color keycaps.
