@@ -1,4 +1,58 @@
-## Este fork: SSH e telemóvel
+# Sentimela — Sentinela, mas o Salvador ficou em segundo
+
+> O Salvador fez o Sentinela. Nós fizemos o Salvador abrir o GitHub para ver o que se passou.
+
+Fork do [Sentinela do teizinh](https://github.com/teizinh/sentinela), afinado para
+SSH no telemóvel, marquee mais eficiente e menos trabalho a desenhar o ecrã.
+O objetivo é simples: vigiar a rede e ganhar esta competição absolutamente
+desnecessária entre amigos.
+
+**O melhor do mundo, segundo um júri independente composto por mim.**
+O Salvador foi convidado para o júri, mas alegou conflito de interesses.
+
+## Porque é que este fork é escandalosamente superior?
+
+| Prova olímpica | Original do Salvador | Este fork, obviamente favorito |
+|---|---|---|
+| Marquee de texto comprido | Recalcula a largura de vários sufixos: custo O(n²) no pior caso. O texto vai passear e o CPU vai com ele. | Percurso linear O(n), sem criar um vetor de caracteres. O texto passeia sozinho, como uma pessoa adulta. |
+| Trabalho a preparar linhas | Prepara as linhas filtradas a partir da seleção, incluindo as que ficam fora do ecrã. Dedicação ao invisível. | Só prepara as linhas que podem ficar visíveis. O resto aguarda a sua vez, Salvador. |
+| Ciclo de espera sem teclas | Poll de 50 ms: até cerca de 20 ciclos/s em repouso. Sempre a perguntar «já chegámos?». | Poll de 250 ms: cerca de 4 ciclos/s em repouso. Cinco vezes menos oportunidades para fazer perguntas parvas. |
+| Colunas no telemóvel | Modo compacto e marquee já existiam, com larguras fixas em várias colunas. | Origem e alvo repartem o espaço disponível; o marquee usa as larguras calculadas. Até o IPv6 tem direito a habitação. |
+| Pesquisa e seleção | A tabela pesquisa; a seleção no ciclo principal só aplica a severidade. Duas realidades paralelas. | Filtro partilhado para mostrar e selecionar o mesmo incidente. A realidade foi finalmente unificada. |
+| Killswitch por SSH | O atalho continua disponível. Um botão de «até já» com muita confiança. | Desativado quando a sessão SSH é detetada. Gostamos de administrar o servidor até ao fim. |
+| Auto-ban do cliente SSH | Sem inclusão automática do cliente na whitelist. | O IP de `SSH_CONNECTION` entra na whitelist inicial. A chamada vem de dentro de casa e nós atendemos. |
+| Notificações desktop por SSH | Disparadas sem distinguir uma sessão remota. | Suprimidas em SSH e respeitam a configuração de notificações. O servidor já não procura um desktop imaginário. |
+| Limiar de auto-ban | A configuração existe, mas a decisão usa 80 fixo. Democracia decorativa. | A decisão lê `security.threat_threshold`; os port sweeps continuam a poder acionar o bloqueio. O TOML ganhou direitos. |
+| Terminal depois de um erro | Reposição na saída normal e no hook de panic. | Guarda de limpeza também nos erros propagados depois de ativar raw mode. Devolvemos o terminal com os talheres todos. |
+| Perfil de distribuição | Sem perfil release personalizado no Cargo.toml. | Thin LTO, uma unidade de codegen e símbolos removidos. O binário vai de mala de cabine. |
+| Builds de release | Workflow da base com Linux x86_64 e Windows x64. | Matriz configurada para Linux x86_64/ARM64, macOS Intel/Apple Silicon e Windows x64. O Salvador foi de carro; nós abrimos uma transportadora. |
+
+**Tradução para quem só veio pelo drama:** menos trabalho desnecessário na UI,
+mais cuidado com sessões SSH e um caminho de distribuição mais completo.
+O motor de deteção continua a partir do trabalho do Salvador. Não inventámos
+o fogo; só pusemos o extintor mais perto do teclado.
+
+### VAR: as bocas são exageradas; a comparação tem uma referência
+
+A coluna «original» refere-se à base deste fork,
+[`ed61a21`](https://github.com/teizinh/sentinela/commit/ed61a21),
+não a todas as versões futuras do projeto dele.
+
+Foram validados localmente **40 testes** e ensaios com pseudo-terminal em
+**20×10, 32×16, 40×24, 69×24, 80×24 e 120×40**, incluindo pesquisa, detalhes,
+redimensionamento e reposição do terminal. O binário Linux medido neste ambiente
+ficou com cerca de **4,4 MiB**; o tamanho varia com a plataforma e a toolchain.
+
+O «cinco vezes» acima compara os intervalos de poll, não é um benchmark de
+velocidade, CPU ou bateria. Os alvos de release indicados são os configurados no
+workflow; o resultado de cada execução está no
+[Actions deste fork](https://github.com/SirEntr0pyy/sentimela/actions).
+Não há certificado de «mais rápido do mundo», «100% failsafe» nem «universal».
+O certificado de «irritou o Salvador» está pendente de revisão pelo próprio.
+
+---
+
+## SSH no telemóvel: a parte em que isto dá jeito
 
 Compila com `cargo build --release --locked`. No telemóvel, liga ao computador
 com `ssh -t utilizador@servidor sentinela` (ou abre uma sessão SSH e executa
@@ -25,7 +79,7 @@ os terminais. A largura de emojis depende também do emulador e da fonte.
 
 ---
 
-# Sentinela
+## O que continua a ser Sentinela
 
 <p align="center">
   <strong>Network Intrusion Detection, Honeypot Traps and Traffic Monitor — written in Rust</strong>
@@ -316,7 +370,7 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-*Developed by [teizinh](https://github.com/teizinh)*
+*Projeto original por [teizinh / Salvador Pontes](https://github.com/teizinh). Fork por [SirEntr0pyy](https://github.com/SirEntr0pyy). A rivalidade é amigável; a licença continua MIT.*
 
 
 ## Builds and releases for this fork
