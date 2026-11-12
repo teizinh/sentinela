@@ -1,5 +1,6 @@
 mod canary;
 mod config;
+pub mod mitigation;
 mod models;
 mod network;
 mod pcap;
