@@ -1249,6 +1249,74 @@ pub fn check_arp_table(
     alerts
 }
 
+/// Deteta conflitos na tabela ARP (Ataques ARP Poisoning / Spoofing).
+/// Identifica se o mesmo MAC físico está associado a múltiplos IPs distintos (excluindo multicast/broadcast ff:ff:ff:ff:ff:ff)
+/// ou se o mesmo endereço IP está associado a múltiplos MACs distintos.
+#[allow(dead_code)]
+pub fn detect_arp_conflicts(arp_entries: &[(String, String)]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut mac_to_ips: Vec<(String, Vec<String>)> = Vec::new();
+    let mut ip_to_macs: Vec<(String, Vec<String>)> = Vec::new();
+
+    for (ip, mac) in arp_entries {
+        let mac_clean = mac.trim();
+        let ip_clean = ip.trim();
+
+        if mac_clean.is_empty() || ip_clean.is_empty() {
+            continue;
+        }
+
+        // Exclui multicast/broadcast ff:ff:ff:ff:ff:ff
+        if mac_clean.eq_ignore_ascii_case("ff:ff:ff:ff:ff:ff") {
+            continue;
+        }
+
+        if let Some((_, ips)) = mac_to_ips
+            .iter_mut()
+            .find(|(m, _)| m.eq_ignore_ascii_case(mac_clean))
+        {
+            if !ips.iter().any(|existing_ip| existing_ip == ip_clean) {
+                ips.push(ip_clean.to_string());
+            }
+        } else {
+            mac_to_ips.push((mac_clean.to_string(), vec![ip_clean.to_string()]));
+        }
+
+        if let Some((_, macs)) = ip_to_macs
+            .iter_mut()
+            .find(|(i, _)| i == ip_clean)
+        {
+            if !macs.iter().any(|existing_mac| existing_mac.eq_ignore_ascii_case(mac_clean)) {
+                macs.push(mac_clean.to_string());
+            }
+        } else {
+            ip_to_macs.push((ip_clean.to_string(), vec![mac_clean.to_string()]));
+        }
+    }
+
+    for (mac, ips) in mac_to_ips {
+        if ips.len() > 1 {
+            warnings.push(format!(
+                "Possível ARP Poisoning: MAC {} associado a múltiplos IPs: {}",
+                mac,
+                ips.join(", ")
+            ));
+        }
+    }
+
+    for (ip, macs) in ip_to_macs {
+        if macs.len() > 1 {
+            warnings.push(format!(
+                "Possível ARP Poisoning: IP {} associado a múltiplos MACs: {}",
+                ip,
+                macs.join(", ")
+            ));
+        }
+    }
+
+    warnings
+}
+
 /// Termina cirurgicamente um processo no sistema operacional com base no PID
 pub fn kill_process_by_pid(pid: u32) -> Result<String, String> {
     if pid <= 1 {
@@ -2631,5 +2699,42 @@ mod tests {
         // 10.0.0.1 teve 5 hits
         assert_eq!(top[1].0, "10.0.0.1");
         assert_eq!(top[1].1, 5);
+    }
+
+    #[test]
+    fn test_arp_poisoning_detection() {
+        let entries = vec![
+            ("192.168.1.10".to_string(), "00:11:22:33:44:55".to_string()),
+            ("192.168.1.20".to_string(), "00:11:22:33:44:55".to_string()),
+            ("192.168.1.30".to_string(), "aa:bb:cc:dd:ee:ff".to_string()),
+            ("192.168.1.255".to_string(), "ff:ff:ff:ff:ff:ff".to_string()),
+            ("255.255.255.255".to_string(), "ff:ff:ff:ff:ff:ff".to_string()),
+        ];
+
+        let conflicts = detect_arp_conflicts(&entries);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0],
+            "Possível ARP Poisoning: MAC 00:11:22:33:44:55 associado a múltiplos IPs: 192.168.1.10, 192.168.1.20"
+        );
+
+        // Teste de duplicado idêntico (não deve disparar falso positivo)
+        let duplicate_same_ip = vec![
+            ("192.168.1.10".to_string(), "00:11:22:33:44:55".to_string()),
+            ("192.168.1.10".to_string(), "00:11:22:33:44:55".to_string()),
+        ];
+        assert!(detect_arp_conflicts(&duplicate_same_ip).is_empty());
+
+        // Teste do mesmo IP com múltiplos MACs
+        let ip_conflict = vec![
+            ("192.168.1.10".to_string(), "00:11:22:33:44:55".to_string()),
+            ("192.168.1.10".to_string(), "aa:bb:cc:dd:ee:02".to_string()),
+        ];
+        let ip_conflicts = detect_arp_conflicts(&ip_conflict);
+        assert_eq!(ip_conflicts.len(), 1);
+        assert_eq!(
+            ip_conflicts[0],
+            "Possível ARP Poisoning: IP 192.168.1.10 associado a múltiplos MACs: 00:11:22:33:44:55, aa:bb:cc:dd:ee:02"
+        );
     }
 }
