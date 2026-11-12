@@ -13,3 +13,7 @@ sentinela_report_*.csv
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Worktrees
+.worktrees/
+
