@@ -228,6 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_port_modal = false;
     let mut port_input = String::new();
     let mut show_sockets = false;
+    let mut show_geoip = false;
     let mut sockets_list: Vec<crate::models::SocketInfo> = Vec::new();
     let mut banned_ips: HashSet<String> = HashSet::new();
     let mut audio_alerts = file_config.alerts.audio_alerts;
@@ -247,6 +248,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut severity_filter = SeverityFilter::All;
     let mut search_active = false;
     let mut search_query = String::new();
+    let mut known_arp: HashMap<String, (String, String)> = HashMap::new();
+    let mut last_arp_check = Instant::now();
 
     let simulate_attack = |target_tx: &mpsc::UnboundedSender<Incident>| {
         let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -256,13 +259,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             port: 2222,
             service: "SSH Honeypot".to_string(),
             severity: "CRÍTICO".to_string(),
-            country: "Simulado".to_string(),
-            city: "Security Lab".to_string(),
-            isp: "Test Runner".to_string(),
-            rdns: Some("simulated-scanner.lab".to_string()),
+            country: "US".to_string(),
+            city: "North Bergen".to_string(),
+            isp: "DigitalOcean, LLC".to_string(),
+            rdns: Some("scanner-nyc.digitalocean.com".to_string()),
             payload: Some("SSH-2.0-libssh_0.9.6".to_string()),
             threat_score: 85,
-            hit_count: 1,
+            hit_count: 3,
         });
         let _ = target_tx.send(Incident {
             timestamp: now_str.clone(),
@@ -270,12 +273,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
             port: 8080,
             service: "HTTP Honeypot".to_string(),
             severity: "MÉDIO".to_string(),
-            country: "Simulado".to_string(),
-            city: "Security Lab".to_string(),
-            isp: "Botnet Crawler".to_string(),
+            country: "RU".to_string(),
+            city: "Moscow".to_string(),
+            isp: "Selectel Network".to_string(),
             rdns: None,
             payload: Some("GET /wp-admin/setup-config.php HTTP/1.1".to_string()),
             threat_score: 55,
+            hit_count: 2,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str.clone(),
+            ip: "185.220.101.5".to_string(),
+            port: 2323,
+            service: "Telnet Honeypot".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "DE".to_string(),
+            city: "Frankfurt".to_string(),
+            isp: "Hetzner Online GmbH".to_string(),
+            rdns: Some("tor-exit.hetzner.de".to_string()),
+            payload: Some("root\x00admin123\r\n".to_string()),
+            threat_score: 95,
+            hit_count: 4,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str.clone(),
+            ip: "177.18.204.12".to_string(),
+            port: 445,
+            service: "SMB Probe".to_string(),
+            severity: "ALERTA".to_string(),
+            country: "BR".to_string(),
+            city: "São Paulo".to_string(),
+            isp: "Claro Telecom Participacoes".to_string(),
+            rdns: None,
+            payload: None,
+            threat_score: 40,
             hit_count: 1,
         });
         let _ = target_tx.send(Incident {
@@ -284,13 +315,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             port: 0,
             service: "Port Sweep".to_string(),
             severity: "SWEEP".to_string(),
-            country: "Simulado".to_string(),
-            city: "Recon Probe".to_string(),
-            isp: "Nmap Scanner".to_string(),
+            country: "CN".to_string(),
+            city: "Shenzhen".to_string(),
+            isp: "China Telecom".to_string(),
             rdns: None,
             payload: None,
             threat_score: 90,
-            hit_count: 1,
+            hit_count: 5,
         });
     };
 
@@ -311,6 +342,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Verifica se recebeu SIGINT (Ctrl+C) em segundo plano
         if sigint_rx.try_recv().is_ok() {
             break;
+        }
+
+        // Verificação periódica da tabela ARP para proteção contra ARP Spoofing / MITM
+        if last_arp_check.elapsed() >= Duration::from_secs(3) {
+            last_arp_check = Instant::now();
+            let arp_alerts = network::check_arp_table(&mut known_arp);
+            for alert in arp_alerts {
+                let _ = tx.send(alert);
+            }
         }
 
         let mut batch_count = 0;
@@ -484,6 +524,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 port_input: &port_input,
                 show_sockets,
                 sockets_list: &sockets_list,
+                show_geoip,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -583,7 +624,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                if show_help || show_warnings || show_incident_modal || show_metrics || show_sockets {
+                if show_help || show_warnings || show_incident_modal || show_metrics || show_sockets || show_geoip {
                     match key.code {
                         KeyCode::Char('a' | 'A') => {
                             audio_alerts = !audio_alerts;
@@ -604,11 +645,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             show_sockets = false;
                             modal_scroll = 0;
                         }
+                        KeyCode::Char('g' | 'G') => {
+                            show_geoip = false;
+                            modal_scroll = 0;
+                        }
                         KeyCode::Char('i' | 'I') => {
                             show_help = false;
                             show_incident_modal = false;
                             show_metrics = false;
                             show_sockets = false;
+                            show_geoip = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('w' | 'W') => {
@@ -616,11 +662,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             show_incident_modal = false;
                             show_metrics = false;
                             show_sockets = false;
+                            show_geoip = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('m' | 'M') => {
                             show_metrics = false;
                             show_sockets = false;
+                            show_geoip = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Esc | KeyCode::Enter => {
@@ -629,7 +677,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             show_incident_modal = false;
                             show_metrics = false;
                             show_sockets = false;
+                            show_geoip = false;
                             modal_scroll = 0;
+                        }
+                        // Terminar cirurgicamente processo do socket no Inspetor de Sockets (Tecla K ou D)
+                        KeyCode::Char('k' | 'K' | 'd' | 'D') if show_sockets => {
+                            let idx = modal_scroll as usize;
+                            if let Some(s) = sockets_list.get(idx) {
+                                let pid_opt = s.pid_process
+                                    .split('(')
+                                    .nth(1)
+                                    .and_then(|p| p.trim_end_matches(')').parse::<u32>().ok());
+
+                                if let Some(pid) = pid_opt {
+                                    match network::kill_process_by_pid(pid) {
+                                        Ok(msg) => {
+                                            toast_message = Some((format!("[🎯] {}", msg), Instant::now()));
+                                            sockets_list = network::get_active_sockets(&trap_ports);
+                                        }
+                                        Err(e) => {
+                                            toast_message = Some((format!("[!] {}", e), Instant::now()));
+                                        }
+                                    }
+                                } else {
+                                    toast_message = Some((match lang {
+                                        Language::Pt => "[!] Este socket pertence ao kernel ou processo sem PID acessível".to_string(),
+                                        Language::En => "[!] This socket belongs to kernel or inaccessible PID".to_string(),
+                                    }, Instant::now()));
+                                }
+                            }
                         }
                         // Banir / Desbanir IP do atacante dentro da modal de raio-X
                         KeyCode::Char('b' | 'B') if show_incident_modal => {
@@ -837,7 +913,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             };
                             toast_message = Some((msg.to_string(), Instant::now()));
                         }
-                        KeyCode::Char('i' | 'I') => {
+                        KeyCode::Char('g' | 'G') => {
+                            show_geoip = true;
+                            modal_scroll = 0;
+                        }
+                        KeyCode::Char('?' | 'i' | 'I') => {
                             show_help = true;
                             modal_scroll = 0;
                         }

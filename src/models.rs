@@ -212,6 +212,14 @@ pub struct SocketInfo {
 
 /// Determina a técnica e tática MITRE ATT&CK correspondente ao incidente
 pub fn map_to_mitre(severity: &str, port: u16, payload: Option<&str>) -> MitreTechnique {
+    if severity == "ARP" || payload.map_or(false, |p| p.contains("ARP")) {
+        return MitreTechnique {
+            id: "T1557.002".to_string(),
+            name: "Adversary-in-the-Middle: ARP Cache Poisoning".to_string(),
+            tactic: "Credential Access / Collection (TA0006)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1557/002/".to_string(),
+        };
+    }
     if severity == "SWEEP" {
         return MitreTechnique {
             id: "T1046".to_string(),
@@ -449,6 +457,10 @@ mod tests {
 
         let web_probe = map_to_mitre("MÉDIO", 8080, Some("GET /admin/.env HTTP/1.1"));
         assert_eq!(web_probe.id, "T1190");
+
+        let arp = map_to_mitre("ARP", 0, Some("ARP Spoofing detected"));
+        assert_eq!(arp.id, "T1557.002");
+        assert!(arp.name.contains("ARP Cache Poisoning"));
     }
 
     #[test]

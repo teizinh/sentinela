@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.8-green.svg" alt="Version 0.3.8">
+  <img src="https://img.shields.io/badge/Version-0.3.9-green.svg" alt="Version 0.3.9">
 </p>
 
 ---
@@ -17,6 +17,15 @@
 Sentinela runs on your machine and watches your network interfaces in real time. It detects port scans (including Nmap SYN stealth, NULL, FIN and XMAS scans), catches anything that connects to configurable honeypot ports, and lets you cut all network access instantly if needed. Everything is visible through a terminal dashboard that works from a desktop down to an SSH session on a phone.
 
 It does not require a separate server, database or cloud account. It runs as a single binary.
+
+---
+
+## Security Operations & Threat Intel (v0.3.9)
+
+- **🌍 [G] GeoIP & Attack Origins Modal:** Interactive SOC distribution modal featuring ASCII bar charts of top attacking nations (with flag mappings) and top attacking ISPs/ASNs.
+- **🛡️ ARP Cache Poisoning & MITM Guard:** Continuous `/proc/net/arp` watchdog that alerts on rogue MAC changes or gateway cloning attacks (mapped to MITRE ATT&CK `T1557.002`).
+- **🎛️ 2-Line Categorized Action Footer:** Responsive control panel organizing quick-response defensive actions (`[↵]`, `[B]`, `[U]`, `[X]`, `[G]`, `[C]`, `[K]`) and analysis tools (`[M]`, `[O]`, `[T]`, `[/]`, `[E]`, `[S]`, `[I]`, `[Q]`) with styled color keycaps.
+- **🎯 Surgical Socket & Process Kill (`[C]` + `[K]`):** Direct process termination (SIGKILL) on offending sockets directly from the Active Sockets Inspector.
 
 ---
 

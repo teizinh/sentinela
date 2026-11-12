@@ -2,6 +2,7 @@ use crate::models::{Incident, Language, PortWarning, SeverityFilter, SocketInfo,
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap},
     Frame,
 };
@@ -45,6 +46,7 @@ pub struct UiContext<'a> {
     pub port_input: &'a str,
     pub show_sockets: bool,
     pub sockets_list: &'a [SocketInfo],
+    pub show_geoip: bool,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -239,6 +241,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         port_input,
         show_sockets,
         sockets_list,
+        show_geoip,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -256,13 +259,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         5
     };
 
+    let footer_height = if screen_height >= 24 && !is_mobile { 4 } else { 3 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(margin)
         .constraints([
             Constraint::Length(header_height),
             Constraint::Min(4),
-            Constraint::Length(3),
+            Constraint::Length(footer_height),
         ])
         .split(f.area());
 
@@ -688,48 +693,194 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     f.render_widget(table, chunks[1]);
 
-    // 3. Rodapé Responsivo com Atalhos & Notificações
-    let footer_text = if search_active {
-        format!(" 🔍 BUSCA FORENSE: /{}█  [Enter: Confirmar | Esc: Cancelar/Limpar]", search_query.unwrap_or(""))
+    // 3. Rodapé Responsivo com Atalhos & Notificações (2 Linhas categorizadas ou 1 Linha Compacta)
+    let (footer_widget, footer_title) = if search_active {
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(" 🔍 BUSCA FORENSE: /", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{}█", search_query.unwrap_or("")), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled(" [↵] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(if lang == Language::Pt { "Confirmar" } else { "Confirm" }, Style::default().fg(Color::White)),
+                Span::styled("   │   ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[Esc] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(if lang == Language::Pt { "Cancelar / Limpar" } else { "Cancel / Clear" }, Style::default().fg(Color::White)),
+            ]),
+        ];
+        (Paragraph::new(lines), match lang {
+            Language::Pt => " [ BUSCA FORENSE ] ",
+            Language::En => " [ FORENSIC SEARCH ] ",
+        })
     } else if let Some(toast) = toast_message {
-        toast.to_string()
-    } else if screen_width < 60 {
-        match lang {
-            Language::Pt => " [C]Sock [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [O]Porta [M]Met [Q]Sair".to_string(),
-            Language::En => " [C]Sock [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [O]Port [M]Met [Q]Quit".to_string(),
-        }
-    } else if chunks[1].width < 95 {
-        match lang {
-            Language::Pt => " [C] Sockets | [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [O] Porta | [M] Métricas | [Q] Sair".to_string(),
-            Language::En => " [C] Sockets | [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [O] Port | [M] Metrics | [Q] Quit".to_string(),
-        }
+        let line2_spans = match lang {
+            Language::Pt => vec![
+                Span::styled(" [↵] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Raio-X  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[B] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Banir  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[G] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("GeoIP  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Sockets  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[M] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Métricas  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[I] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Ajuda  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[Q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Sair", Style::default().fg(theme.footer_color())),
+            ],
+            Language::En => vec![
+                Span::styled(" [↵] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Inspect  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[B] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Ban  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[G] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("GeoIP  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Sockets  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[M] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Metrics  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[I] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Help  ", Style::default().fg(theme.footer_color())),
+                Span::styled("[Q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Quit", Style::default().fg(theme.footer_color())),
+            ],
+        };
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(" 🔔 ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(toast, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(line2_spans),
+        ];
+        (Paragraph::new(lines), match lang {
+            Language::Pt => " [ NOTIFICAÇÃO ] ",
+            Language::En => " [ NOTIFICATION ] ",
+        })
+    } else if footer_height >= 4 {
+        let (l1, l2) = match lang {
+            Language::Pt => (
+                vec![
+                    Span::styled(" [↵] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Raio-X", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[B] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Banir", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[U] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Whitelist", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[X] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Auto-Ban", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[G] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("GeoIP", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Sockets", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[K] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled("Killswitch", Style::default().fg(theme.footer_color())),
+                ],
+                vec![
+                    Span::styled(" [M] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Métricas", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[O] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("+Porta", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[T] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Tema", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[/] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Busca", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[E] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Exportar", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[S] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Simular", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[I] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Ajuda", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[Q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Sair", Style::default().fg(theme.footer_color())),
+                ],
+            ),
+            Language::En => (
+                vec![
+                    Span::styled(" [↵] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Inspect", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[B] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Ban", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[U] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Whitelist", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[X] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Auto-Ban", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[G] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("GeoIP", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Sockets", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[K] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled("Killswitch", Style::default().fg(theme.footer_color())),
+                ],
+                vec![
+                    Span::styled(" [M] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Metrics", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[O] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("+Port", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[T] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Theme", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[/] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Search", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[E] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Export", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[S] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Simulate", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[I] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Help", Style::default().fg(theme.footer_color())),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[Q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled("Quit", Style::default().fg(theme.footer_color())),
+                ],
+            ),
+        };
+        (Paragraph::new(vec![Line::from(l1), Line::from(l2)]), match lang {
+            Language::Pt => " [ PAINEL DE CONTROLO & COMANDOS ] ",
+            Language::En => " [ CONTROL PANEL & COMMANDS ] ",
+        })
     } else {
-        match lang {
-            Language::Pt => " [C] Sockets | [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [O] +Porta | [M] Métricas | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [I] Manual | [Q] Sair ".to_string(),
-            Language::En => " [C] Sockets | [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [O] +Port | [M] Metrics | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [I] Manual | [Q] Quit ".to_string(),
-        }
+        let footer_inner_w = chunks[2].width.saturating_sub(2) as usize;
+        let single_line = match lang {
+            Language::Pt => " [↵]Raio-X [B]Ban [U]White [X]Auto [G]GeoIP [C]Sock [M]Met [/]Busca [T]Tema [I]Ajuda [Q]Sair",
+            Language::En => " [↵]Inspect [B]Ban [U]White [X]Auto [G]GeoIP [C]Sock [M]Met [/]Search [T]Theme [I]Help [Q]Quit",
+        };
+        let displayed = marquee_scroll(single_line, footer_inner_w, animation_tick);
+        (Paragraph::new(displayed).style(Style::default().fg(theme.footer_color())), match lang {
+            Language::Pt => " [ ATALHOS ] ",
+            Language::En => " [ SHORTCUTS ] ",
+        })
     };
 
-    let footer_style = if search_active || toast_message.is_some() {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.footer_color())
-    };
-
-    let footer_inner_w = chunks[2].width.saturating_sub(2) as usize;
-    let displayed_footer = if search_active {
-        footer_text
-    } else if is_mobile || toast_message.is_some() {
-        marquee_scroll(&footer_text, footer_inner_w, animation_tick)
-    } else {
-        footer_text
-    };
-
-    let footer = Paragraph::new(displayed_footer)
-        .style(footer_style)
+    let footer = footer_widget
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .title(footer_title)
                 .border_style(Style::default().fg(theme.border_color())),
         );
     f.render_widget(footer, chunks[2]);
@@ -1387,6 +1538,151 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
         f.render_widget(modal_p, area);
     }
+
+    // 9. Modal de Distribuição Geográfica GeoIP & Top Países Atacantes (Tecla G)
+    if show_geoip {
+        let area = centered_rect(modal_w, modal_h, f.area());
+        f.render_widget(Clear, area);
+
+        let title = match lang {
+            Language::Pt => " [G] DISTRIBUIÇÃO GEOGRÁFICA DE AMEAÇAS & GEOIP INTEL ",
+            Language::En => " [G] GEOGRAPHIC THREAT DISTRIBUTION & GEOIP INTEL ",
+        };
+        let final_title = format_modal_title(title, modal_scroll);
+
+        let mut country_counts: HashMap<String, usize> = HashMap::new();
+        let mut isp_counts: HashMap<String, usize> = HashMap::new();
+        let mut total_hits = 0;
+        let mut external_hits = 0;
+        let mut local_hits = 0;
+
+        for inc in incidents {
+            total_hits += inc.hit_count;
+            let c = inc.country.trim();
+            if c.is_empty() || c == "?" || c.contains("Local") || c.contains("LAN") {
+                local_hits += inc.hit_count;
+            } else {
+                external_hits += inc.hit_count;
+                *country_counts.entry(c.to_string()).or_insert(0) += inc.hit_count;
+                let isp_name = inc.isp.trim();
+                if !isp_name.is_empty() && isp_name != "?" && !isp_name.contains("Local") {
+                    *isp_counts.entry(isp_name.to_string()).or_insert(0) += inc.hit_count;
+                }
+            }
+        }
+
+        let mut sorted_countries: Vec<(String, usize)> = country_counts.into_iter().collect();
+        sorted_countries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut sorted_isps: Vec<(String, usize)> = isp_counts.into_iter().collect();
+        sorted_isps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut body = String::new();
+        body.push_str(&format!(
+            " {} Total Eventos: {}  │  🌐 Externos Mapeados: {}  │  🏠 Rede Local/Privada: {}  │  🗺️ Países: {}\n",
+            if lang == Language::Pt { "Estatísticas:" } else { "Statistics:" },
+            total_hits, external_hits, local_hits, sorted_countries.len()
+        ));
+        body.push_str(" ───────────────────────────────────────────────────────────────────────────────────────────────────\n\n");
+
+        body.push_str(match lang {
+            Language::Pt => " 🌍 ORIGEM GEOGRÁFICA DOS ATAQUES (TOP PAÍSES):\n",
+            Language::En => " 🌍 GEOGRAPHIC ORIGINS OF ATTACKS (TOP COUNTRIES):\n",
+        });
+
+        if sorted_countries.is_empty() {
+            body.push_str(match lang {
+                Language::Pt => "   (Nenhum ataque externo geolocalizado até ao momento. Execute [S] para simular ameaças)\n\n",
+                Language::En => "   (No external geolocated attacks detected yet. Press [S] to simulate attacks)\n\n",
+            });
+        } else {
+            for (code, hits) in sorted_countries.iter().take(8) {
+                let (flag, country_name) = country_code_to_name(code, lang);
+                let pct = (hits * 100) as f64 / external_hits.max(1) as f64;
+                let bar_len = ((pct / 100.0) * 30.0).round() as usize;
+                let bar = "█".repeat(bar_len);
+                body.push_str(&format!(
+                    "   {} {:<18} {:<30} {:>5.1}%  ({} hits)\n",
+                    flag,
+                    if country_name.len() > 18 { format!("{}...", &country_name[..15]) } else { country_name },
+                    bar,
+                    pct,
+                    hits
+                ));
+            }
+            body.push('\n');
+        }
+
+        body.push_str(" ───────────────────────────────────────────────────────────────────────────────────────────────────\n");
+        body.push_str(match lang {
+            Language::Pt => " 🏢 TOP PROVEDORES DE REDE & SISTEMAS AUTÓNOMOS (ISPs / AS):\n",
+            Language::En => " 🏢 TOP NETWORK PROVIDERS & AUTONOMOUS SYSTEMS (ISPs / AS):\n",
+        });
+
+        if sorted_isps.is_empty() {
+            body.push_str(match lang {
+                Language::Pt => "   (Nenhum fornecedor de rede identificado nos incidentes atuais)\n\n",
+                Language::En => "   (No network providers identified in current incidents)\n\n",
+            });
+        } else {
+            for (idx, (isp, hits)) in sorted_isps.iter().take(5).enumerate() {
+                body.push_str(&format!(
+                    "   {}. {:<45} ({} eventos / hits)\n",
+                    idx + 1,
+                    if isp.len() > 45 { format!("{}...", &isp[..42]) } else { isp.clone() },
+                    hits
+                ));
+            }
+            body.push('\n');
+        }
+
+        body.push_str(" ───────────────────────────────────────────────────────────────────────────────────────────────────\n");
+        body.push_str(match lang {
+            Language::Pt => " [Esc / G / Enter] Fechar modal  │  [↑/↓] Rolar conteúdo\n",
+            Language::En => " [Esc / G / Enter] Close modal  │  [↑/↓] Scroll content\n",
+        });
+
+        let modal_p = Paragraph::new(body)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
+            .scroll((modal_scroll, 0))
+            .alignment(Alignment::Left)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(final_title)
+                    .style(Style::default().bg(Color::Black).fg(Color::Cyan)),
+            );
+
+        f.render_widget(modal_p, area);
+    }
+}
+
+pub fn country_code_to_name(code: &str, lang: Language) -> (&'static str, String) {
+    match code.trim().to_uppercase().as_str() {
+        "US" => ("🇺🇸", if lang == Language::Pt { "Estados Unidos".into() } else { "United States".into() }),
+        "PT" => ("🇵🇹", "Portugal".into()),
+        "BR" => ("🇧🇷", if lang == Language::Pt { "Brasil".into() } else { "Brazil".into() }),
+        "RU" => ("🇷🇺", if lang == Language::Pt { "Rússia".into() } else { "Russia".into() }),
+        "CN" => ("🇨🇳", "China".into()),
+        "DE" => ("🇩🇪", if lang == Language::Pt { "Alemanha".into() } else { "Germany".into() }),
+        "GB" | "UK" => ("🇬🇧", if lang == Language::Pt { "Reino Unido".into() } else { "United Kingdom".into() }),
+        "FR" => ("🇫🇷", if lang == Language::Pt { "França".into() } else { "France".into() }),
+        "ES" => ("🇪🇸", if lang == Language::Pt { "Espanha".into() } else { "Spain".into() }),
+        "NL" => ("🇳🇱", if lang == Language::Pt { "Holanda".into() } else { "Netherlands".into() }),
+        "IT" => ("🇮🇹", if lang == Language::Pt { "Itália".into() } else { "Italy".into() }),
+        "CA" => ("🇨🇦", if lang == Language::Pt { "Canadá".into() } else { "Canada".into() }),
+        "UA" => ("🇺🇦", if lang == Language::Pt { "Ucrânia".into() } else { "Ukraine".into() }),
+        "IN" => ("🇮🇳", if lang == Language::Pt { "Índia".into() } else { "India".into() }),
+        "JP" => ("🇯🇵", if lang == Language::Pt { "Japão".into() } else { "Japan".into() }),
+        "PL" => ("🇵🇱", if lang == Language::Pt { "Polónia".into() } else { "Poland".into() }),
+        "RO" => ("🇷🇴", if lang == Language::Pt { "Roménia".into() } else { "Romania".into() }),
+        "VN" => ("🇻🇳", if lang == Language::Pt { "Vietname".into() } else { "Vietnam".into() }),
+        "KR" => ("🇰🇷", if lang == Language::Pt { "Coreia do Sul".into() } else { "South Korea".into() }),
+        "CH" => ("🇨🇭", if lang == Language::Pt { "Suíça".into() } else { "Switzerland".into() }),
+        "SE" => ("🇸🇪", if lang == Language::Pt { "Suécia".into() } else { "Sweden".into() }),
+        other => ("🌐", if other.is_empty() { "Desconhecido".into() } else { other.to_string() }),
+    }
 }
 
 // Centra os modais cobrindo a área de forma homogénea sem deixar sobras feias de lado
@@ -1553,5 +1849,19 @@ mod tests {
         let scrolled = marquee_scroll(text, 15, 0);
         assert_eq!(scrolled.chars().count(), 15);
         assert!(text.starts_with(&scrolled));
+    }
+
+    #[test]
+    fn test_country_code_to_name() {
+        let (flag_pt, name_pt) = country_code_to_name("PT", Language::Pt);
+        assert_eq!(flag_pt, "🇵🇹");
+        assert_eq!(name_pt, "Portugal");
+
+        let (flag_us, name_us) = country_code_to_name("US", Language::Pt);
+        assert_eq!(flag_us, "🇺🇸");
+        assert_eq!(name_us, "Estados Unidos");
+
+        let (flag_unk, _) = country_code_to_name("XYZ", Language::Pt);
+        assert_eq!(flag_unk, "🌐");
     }
 }

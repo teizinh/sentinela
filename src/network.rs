@@ -1119,6 +1119,144 @@ pub fn get_active_sockets(trap_ports: &[u16]) -> Vec<SocketInfo> {
     sockets
 }
 
+/// Deteta alterações suspeitas ou falsificação de endereços na tabela ARP do sistema (Ataques MITM / ARP Poisoning)
+pub fn check_arp_table(
+    known_arp: &mut std::collections::HashMap<String, (String, String)>,
+) -> Vec<crate::models::Incident> {
+    let mut alerts = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/net/arp") {
+            let mut current_mac_to_ip: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+            for line in content.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 6 {
+                    continue;
+                }
+                let ip = parts[0];
+                let flags = parts[2];
+                let mac = parts[3].to_lowercase();
+                let dev = parts[5];
+
+                // Ignora entradas incompletas ou inválidas
+                if flags == "0x0" || mac == "00:00:00:00:00:00" || mac.len() != 17 {
+                    continue;
+                }
+
+                current_mac_to_ip
+                    .entry(format!("{}_{}", mac, dev))
+                    .or_default()
+                    .push(ip.to_string());
+
+                if let Some((old_mac, old_dev)) = known_arp.get(ip) {
+                    if old_dev == dev && old_mac != &mac {
+                        let payload_msg = format!(
+                            "POSSÍVEL ATAQUE MITM / ARP CACHE POISONING!\nO IP '{}' na interface '{}' mudou de MAC:\n  Anterior: {}\n  Atual:    {}\nMITRE ATT&CK: T1557.002",
+                            ip, dev, old_mac, mac
+                        );
+                        alerts.push(crate::models::Incident {
+                            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            ip: ip.to_string(),
+                            port: 0,
+                            service: "ARP Guard (MITM)".to_string(),
+                            severity: "CRÍTICO".to_string(),
+                            country: "Rede Local (LAN)".to_string(),
+                            city: dev.to_string(),
+                            isp: "Interface Local".to_string(),
+                            rdns: None,
+                            payload: Some(payload_msg),
+                            threat_score: 95,
+                            hit_count: 1,
+                        });
+                    }
+                }
+
+                // Atualiza / regista o mapeamento conhecido
+                known_arp.insert(ip.to_string(), (mac, dev.to_string()));
+            }
+
+            // Deteção adicional: se um mesmo MAC físico estiver a responder por múltiplos IPs distintos na mesma interface
+            for (mac_dev, ips) in current_mac_to_ip {
+                if ips.len() >= 3 {
+                    let parts: Vec<&str> = mac_dev.split('_').collect();
+                    let mac = parts[0];
+                    let dev = if parts.len() > 1 { parts[1] } else { "" };
+                    if !dev.starts_with("docker") && !dev.starts_with("br-") && !dev.starts_with("virbr") {
+                        let payload_msg = format!(
+                            "ALERTA ARP SPOOFING / DUPLICAÇÃO DE MAC!\nO MAC '{}' na interface '{}' está associado a múltiplos IPs ({:?}).\nPossível nó a intercetar todo o tráfego da subnet.",
+                            mac, dev, ips
+                        );
+                        let first_ip = ips[0].clone();
+                        if !alerts.iter().any(|a| a.ip == first_ip) {
+                            alerts.push(crate::models::Incident {
+                                timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                ip: first_ip,
+                                port: 0,
+                                service: "ARP Guard (Clone)".to_string(),
+                                severity: "CRÍTICO".to_string(),
+                                country: "Rede Local (LAN)".to_string(),
+                                city: dev.to_string(),
+                                isp: "Interface Local".to_string(),
+                                rdns: None,
+                                payload: Some(payload_msg),
+                                threat_score: 90,
+                                hit_count: 1,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    alerts
+}
+
+/// Termina cirurgicamente um processo no sistema operacional com base no PID
+pub fn kill_process_by_pid(pid: u32) -> Result<String, String> {
+    if pid <= 1 {
+        return Err("Não é permitido terminar o processo init / systemd (PID <= 1)".to_string());
+    }
+    let my_pid = std::process::id();
+    if pid == my_pid {
+        return Err("Não é permitido auto-terminar o processo do Sentinela".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => Ok(format!("Processo PID {} terminado com sucesso (SIGKILL)", pid)),
+            Ok(s) => Err(format!("Falha ao terminar processo PID {} (código {})", pid, s.code().unwrap_or(-1))),
+            Err(e) => Err(format!("Erro ao executar kill no PID {}: {}", pid, e)),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => Ok(format!("Processo PID {} terminado com sucesso (Taskkill)", pid)),
+            Ok(s) => Err(format!("Falha ao terminar processo PID {}", pid)),
+            Err(e) => Err(format!("Erro ao executar taskkill no PID {}: {}", pid, e)),
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = pid;
+        Err("Terminação de processos não suportada nesta plataforma".to_string())
+    }
+}
+
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
 pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned: bool) {
     let url = webhook_url.trim().to_string();
@@ -2020,5 +2158,22 @@ mod tests {
         // O cache deve guardar o valor retornado
         let host2 = resolve_rdns(ip).await;
         assert_eq!(host, host2);
+    }
+
+    #[test]
+    fn test_kill_process_safety_checks() {
+        // PID 0 ou 1 não podem ser mortos por proteção
+        assert!(kill_process_by_pid(0).is_err());
+        assert!(kill_process_by_pid(1).is_err());
+        // Sentinela não se pode auto-matar
+        assert!(kill_process_by_pid(std::process::id()).is_err());
+    }
+
+    #[test]
+    fn test_check_arp_table_runs() {
+        let mut known = std::collections::HashMap::new();
+        let alerts = check_arp_table(&mut known);
+        // Na primeira execução inicial, mapeia a tabela sem disparar falso positivo
+        assert!(alerts.is_empty());
     }
 }
