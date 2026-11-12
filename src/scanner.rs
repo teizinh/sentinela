@@ -3,6 +3,19 @@
 //! No Linux: usa sockets raw (AF_PACKET via pnet) para capturar pacotes SYN antes do handshake.
 //! Em outros SOs (Windows / macOS): opera através do motor de armadilhas assíncrono nativo (TcpListener).
 
+/// Classifica flags TCP para deteção de varrimentos furtivos (stealth scans).
+#[allow(dead_code)]
+pub fn classify_tcp_flags(flags: u8) -> Option<&'static str> {
+    match flags {
+        0x00 => Some("NULL Scan (T1046)"),
+        0x01 => Some("FIN Scan (T1046)"),
+        0x29 => Some("XMAS Scan (T1046)"),
+        0x02 => Some("SYN Scan (T1046)"),
+        0x14 => Some("RST-ACK Scan Response"),
+        _ => None,
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 mod non_linux {
     use crate::models::Incident;
@@ -468,3 +481,21 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tcp_stealth_scan_classification() {
+        // NULL (0), FIN (1), XMAS (0x29), SYN (2)
+        assert_eq!(classify_tcp_flags(0), Some("NULL Scan (T1046)"));
+        assert_eq!(classify_tcp_flags(1), Some("FIN Scan (T1046)"));
+        assert_eq!(classify_tcp_flags(0x29), Some("XMAS Scan (T1046)"));
+        assert_eq!(classify_tcp_flags(2), Some("SYN Scan (T1046)"));
+        assert_eq!(classify_tcp_flags(0x14), Some("RST-ACK Scan Response"));
+        assert_eq!(classify_tcp_flags(0x10), None);
+        assert_eq!(classify_tcp_flags(0x12), None);
+    }
+}
+
