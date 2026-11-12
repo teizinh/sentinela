@@ -1,3 +1,4 @@
+mod canary;
 mod config;
 mod models;
 mod network;
@@ -267,6 +268,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Se falhar por falta de permissão, continua apenas com deteção de ligações completas.
     let scanner_active = scanner::start_packet_scanner(tx.clone(), trap_ports.clone());
 
+    // Inicia Canário Anti-Ransomware / Honeyfile Deception Watchdog
+    let mut honeyfile_watchdog = canary::HoneyfileWatchdog::new(None);
+    let canary_active = honeyfile_watchdog.deploy().is_ok();
+    let _canary_handle = if canary_active {
+        canary::start_honeyfile_watchdog(honeyfile_watchdog.path.clone(), tx.clone())
+    } else {
+        None
+    };
+
+    let mut throughput_sampler = network::ThroughputSampler::default();
+    let mut current_throughput_str = String::new();
+    let mut last_throughput_sample = Instant::now() - Duration::from_secs(1);
+
     enable_raw_mode()?;
     let _terminal_guard = TerminalGuard;
     let mut stdout = io::stdout();
@@ -366,7 +380,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             hit_count: 1,
         });
         let _ = target_tx.send(Incident {
-            timestamp: now_str,
+            timestamp: now_str.clone(),
             ip: "192.0.2.14".to_string(),
             port: 0,
             service: "Port Sweep".to_string(),
@@ -378,6 +392,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
             payload: None,
             threat_score: 90,
             hit_count: 5,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str.clone(),
+            ip: "198.51.100.99".to_string(),
+            port: 53,
+            service: "DNS (Tunneling/Exfil)".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "FR".to_string(),
+            city: "Paris".to_string(),
+            isp: "OVH SAS".to_string(),
+            rdns: Some("ns1.tunnel-exfil-c2.net".to_string()),
+            payload: Some("QNAME: dGVzdF9leGZpbF8xMjM0NTY=.tunnel.evilc2.org (Entropia: 3.82)".to_string()),
+            threat_score: 92,
+            hit_count: 7,
+        });
+        let _ = target_tx.send(Incident {
+            timestamp: now_str,
+            ip: "127.0.0.1".to_string(),
+            port: 0,
+            service: "Honeyfile (Anti-Ransomware)".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "Local".to_string(),
+            city: "Sistema de Ficheiros".to_string(),
+            isp: "Watchdog Inotify".to_string(),
+            rdns: Some("honeyfile.canary.local".to_string()),
+            payload: Some("Modificação/Tentativa de Encriptação (Ransomware Detectado!): /tmp/.sentinela_honeyfile_credentials.env".to_string()),
+            threat_score: 98,
+            hit_count: 1,
         });
     };
 
@@ -398,6 +440,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Verifica se recebeu SIGINT (Ctrl+C) em segundo plano
         if sigint_rx.try_recv().is_ok() {
             break;
+        }
+
+        // Amostragem periódica de débito de rede (Throughput TX/RX)
+        if last_throughput_sample.elapsed() >= Duration::from_millis(800) {
+            let tp = network::sample_network_throughput(&mut throughput_sampler);
+            current_throughput_str = format!("↓ {} | ↑ {}", network::format_bandwidth(tp.rx_bytes_per_sec), network::format_bandwidth(tp.tx_bytes_per_sec));
+            last_throughput_sample = Instant::now();
         }
 
         // Verificação periódica da tabela ARP para proteção contra ARP Spoofing / MITM
@@ -581,6 +630,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 show_sockets,
                 sockets_list: &sockets_list,
                 show_geoip,
+                throughput_str: &current_throughput_str,
+                canary_active,
             };
             ui::render_ui(f, &ui_ctx);
         })?;

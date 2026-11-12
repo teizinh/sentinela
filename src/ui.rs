@@ -47,6 +47,8 @@ pub struct UiContext<'a> {
     pub show_sockets: bool,
     pub sockets_list: &'a [SocketInfo],
     pub show_geoip: bool,
+    pub throughput_str: &'a str,
+    pub canary_active: bool,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -242,6 +244,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         show_sockets,
         sockets_list,
         show_geoip,
+        throughput_str,
+        canary_active,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -479,9 +483,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             sys_info.kernel.clone()
         };
 
+        let net_label = if throughput_str.is_empty() {
+            format!("Kernel: {}", short_kernel)
+        } else {
+            format!("Rede: {}", throughput_str)
+        };
+
         let sys_box_text = format!(
-            " SO: {}\n Kernel: {}\n Arch: {}",
-            sys_info.distro, short_kernel, sys_info.arch
+            " SO: {}\n {}\n Arch: {}",
+            sys_info.distro, net_label, sys_info.arch
         );
         let sys_title = match lang {
             Language::Pt => " Sistema ",
@@ -1338,6 +1348,23 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             }
         }
 
+        let top_talkers = crate::network::get_top_talkers(incidents, 5);
+        let mut talkers_chart = String::new();
+        if top_talkers.is_empty() {
+            talkers_chart.push_str(match lang {
+                Language::Pt => "   (Nenhum tráfego relevante registado)\n",
+                Language::En => "   (No relevant traffic recorded)\n",
+            });
+        } else {
+            for (ip, hits, country, isp, score) in top_talkers {
+                let short_isp = if isp.len() > 18 { format!("{}...", &isp[..15]) } else { isp };
+                talkers_chart.push_str(&format!(
+                    "   • {:<15} : {:>3} hits | Score: {:>2} | {}, {}\n",
+                    ip, hits, score, country, short_isp
+                ));
+            }
+        }
+
         let crit = severity_stats.get("CRÍTICO").copied().unwrap_or(0);
         let med = severity_stats.get("MÉDIO").copied().unwrap_or(0);
         let alrt = severity_stats.get("ALERTA").copied().unwrap_or(0);
@@ -1354,8 +1381,14 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • IPs BLOQUEADOS     : {} (Regras DROP ativas no firewall)\n\
                      • IPs NA WHITELIST   : {} (Imunes a Auto-Ban)\n\
                      • ARMADILHAS ATIVAS  : {} portas monitorizadas\n\n\
+                     DÉBITO DE REDE & SENSORES ESPECIAIS:\n\
+                     • Throughput Atual   : {}\n\
+                     • Canário Honeyfile  : {}\n\
+                     • DNS Tunneling Watch: Ativo (Entropia Shannon na Porta 53)\n\n\
                      DISTRIBUIÇÃO DE SEVERIDADE:\n\
                      • Crítico: {:<4} | Sweep/Var: {:<4} | Médio: {:<4} | Alerta: {:<4}\n\n\
+                     TOP TALKERS (PRINCIPAIS ATACANTES):\n\
+                     {}\n\
                      TOP PORTAS VISADAS PELOS ATACANTES:\n\
                      {}\n\
                      MATRIZ MITRE ATT&CK OBSERVADA:\n\
@@ -1370,7 +1403,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     banned_ips.len(),
                     whitelisted_ips.len(),
                     trap_ports.len(),
+                    if throughput_str.is_empty() { "A calcular..." } else { throughput_str },
+                    if canary_active { "ATIVO (/tmp/.sentinela_honeyfile_credentials.env) 🛡️" } else { "INATIVO" },
                     crit, swp, med, alrt,
+                    talkers_chart,
                     ports_chart,
                     mitre_chart,
                     if auto_ban { "ATIVO (Threshold >= 80)" } else { "DESATIVADO" },
@@ -1388,8 +1424,14 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • BANNED IPS (DROP)  : {} active firewall drops\n\
                      • WHITELISTED IPS    : {} trusted addresses\n\
                      • ACTIVE HONEYPOTS   : {} ports monitored\n\n\
+                     NETWORK THROUGHPUT & SPECIAL SENSORS:\n\
+                     • Live Throughput    : {}\n\
+                     • Honeyfile Canary   : {}\n\
+                     • DNS Tunneling Watch: Active (Shannon Entropy on Port 53)\n\n\
                      SEVERITY BREAKDOWN:\n\
                      • Critical: {:<4} | Sweep: {:<4} | Medium: {:<4} | Alert: {:<4}\n\n\
+                     TOP TALKERS (TOP OFFENDING SOURCES):\n\
+                     {}\n\
                      TOP TARGETED PORTS (ATTACK SURFACE):\n\
                      {}\n\
                      OBSERVED MITRE ATT&CK TACTICS:\n\
@@ -1404,7 +1446,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     banned_ips.len(),
                     whitelisted_ips.len(),
                     trap_ports.len(),
+                    if throughput_str.is_empty() { "Sampling..." } else { throughput_str },
+                    if canary_active { "ACTIVE (/tmp/.sentinela_honeyfile_credentials.env) 🛡️" } else { "INACTIVE" },
                     crit, swp, med, alrt,
+                    talkers_chart,
                     ports_chart,
                     mitre_chart,
                     if auto_ban { "ENABLED (Threshold >= 80)" } else { "DISABLED" },

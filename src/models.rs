@@ -212,6 +212,28 @@ pub struct SocketInfo {
 
 /// Determina a técnica e tática MITRE ATT&CK correspondente ao incidente
 pub fn map_to_mitre(severity: &str, port: u16, payload: Option<&str>) -> MitreTechnique {
+    if severity == "CANARY"
+        || severity == "RANSOMWARE"
+        || payload.map_or(false, |p| p.contains("Honeyfile") || p.contains("Canário") || p.contains("Ransomware"))
+    {
+        return MitreTechnique {
+            id: "T1486".to_string(),
+            name: "Data Encrypted for Impact / Canary Honeyfile Breach".to_string(),
+            tactic: "Impact (TA0040) / Credential Access (TA0006)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1486/".to_string(),
+        };
+    }
+    if port == 53
+        || severity == "TUNNEL"
+        || payload.map_or(false, |p| p.contains("Tunneling") || p.contains("Exfil"))
+    {
+        return MitreTechnique {
+            id: "T1071.004".to_string(),
+            name: "Application Layer Protocol: DNS Tunneling & Exfiltration".to_string(),
+            tactic: "Command and Control (TA0011) / Exfiltration (TA0010)".to_string(),
+            url: "https://attack.mitre.org/techniques/T1071/004/".to_string(),
+        };
+    }
     if severity == "ARP" || payload.map_or(false, |p| p.contains("ARP")) {
         return MitreTechnique {
             id: "T1557.002".to_string(),

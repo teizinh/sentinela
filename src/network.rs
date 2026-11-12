@@ -1304,6 +1304,213 @@ pub fn find_other_sentinela_instances() -> Vec<u32> {
     instances
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct NetworkThroughput {
+    pub rx_bytes_per_sec: f64,
+    pub tx_bytes_per_sec: f64,
+    #[allow(dead_code)]
+    pub rx_packets_per_sec: f64,
+    #[allow(dead_code)]
+    pub tx_packets_per_sec: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThroughputSampler {
+    pub last_sample_time: Option<std::time::Instant>,
+    pub last_rx_bytes: u64,
+    pub last_tx_bytes: u64,
+    pub last_rx_packets: u64,
+    pub last_tx_packets: u64,
+    pub rx_history: Vec<u64>,
+    pub tx_history: Vec<u64>,
+}
+
+impl Default for ThroughputSampler {
+    fn default() -> Self {
+        Self {
+            last_sample_time: None,
+            last_rx_bytes: 0,
+            last_tx_bytes: 0,
+            last_rx_packets: 0,
+            last_tx_packets: 0,
+            rx_history: Vec::new(),
+            tx_history: Vec::new(),
+        }
+    }
+}
+
+/// Amostra o débito de rede (RX/TX bytes e pacotes por segundo) lendo /proc/net/dev no Linux
+pub fn sample_network_throughput(sampler: &mut ThroughputSampler) -> NetworkThroughput {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/net/dev") {
+            let mut total_rx_bytes = 0u64;
+            let mut total_tx_bytes = 0u64;
+            let mut total_rx_packets = 0u64;
+            let mut total_tx_packets = 0u64;
+
+            for line in content.lines().skip(2) {
+                if let Some((iface, data)) = line.split_once(':') {
+                    let iface_name = iface.trim();
+                    if iface_name == "lo" {
+                        continue;
+                    }
+
+                    let fields: Vec<&str> = data.split_whitespace().collect();
+                    if fields.len() >= 9 {
+                        let rx_b = fields[0].parse::<u64>().unwrap_or(0);
+                        let rx_p = fields[1].parse::<u64>().unwrap_or(0);
+                        let tx_b = fields[8].parse::<u64>().unwrap_or(0);
+                        let tx_p = fields[9].parse::<u64>().unwrap_or(0);
+
+                        total_rx_bytes += rx_b;
+                        total_rx_packets += rx_p;
+                        total_tx_bytes += tx_b;
+                        total_tx_packets += tx_p;
+                    }
+                }
+            }
+
+            let now = std::time::Instant::now();
+            if let Some(prev_time) = sampler.last_sample_time {
+                let delta = now.duration_since(prev_time).as_secs_f64();
+                if delta > 0.05 {
+                    let rx_diff = total_rx_bytes.saturating_sub(sampler.last_rx_bytes);
+                    let tx_diff = total_tx_bytes.saturating_sub(sampler.last_tx_bytes);
+                    let rx_p_diff = total_rx_packets.saturating_sub(sampler.last_rx_packets);
+                    let tx_p_diff = total_tx_packets.saturating_sub(sampler.last_tx_packets);
+
+                    let rx_rate = rx_diff as f64 / delta;
+                    let tx_rate = tx_diff as f64 / delta;
+
+                    sampler.rx_history.push((rx_rate / 1024.0) as u64);
+                    sampler.tx_history.push((tx_rate / 1024.0) as u64);
+                    if sampler.rx_history.len() > 30 {
+                        sampler.rx_history.remove(0);
+                    }
+                    if sampler.tx_history.len() > 30 {
+                        sampler.tx_history.remove(0);
+                    }
+
+                    sampler.last_sample_time = Some(now);
+                    sampler.last_rx_bytes = total_rx_bytes;
+                    sampler.last_tx_bytes = total_tx_bytes;
+                    sampler.last_rx_packets = total_rx_packets;
+                    sampler.last_tx_packets = total_tx_packets;
+
+                    return NetworkThroughput {
+                        rx_bytes_per_sec: rx_rate,
+                        tx_bytes_per_sec: tx_rate,
+                        rx_packets_per_sec: rx_p_diff as f64 / delta,
+                        tx_packets_per_sec: tx_p_diff as f64 / delta,
+                    };
+                }
+            }
+
+            sampler.last_sample_time = Some(now);
+            sampler.last_rx_bytes = total_rx_bytes;
+            sampler.last_tx_bytes = total_tx_bytes;
+            sampler.last_rx_packets = total_rx_packets;
+            sampler.last_tx_packets = total_tx_packets;
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = sampler;
+    }
+
+    NetworkThroughput::default()
+}
+
+/// Formata taxa de transferência de bytes por segundo em formato legível (B/s, KB/s, MB/s)
+pub fn format_bandwidth(bytes_per_sec: f64) -> String {
+    if bytes_per_sec < 1024.0 {
+        format!("{:.0} B/s", bytes_per_sec)
+    } else if bytes_per_sec < 1024.0 * 1024.0 {
+        format!("{:.1} KB/s", bytes_per_sec / 1024.0)
+    } else {
+        format!("{:.2} MB/s", bytes_per_sec / (1024.0 * 1024.0))
+    }
+}
+
+/// Calcula a entropia de Shannon de uma sequência de caracteres (usada para detetar dados ofuscados/cifrados)
+#[allow(dead_code)]
+pub fn calculate_entropy(s: &str) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let mut freq = [0usize; 256];
+    let mut len = 0;
+    for b in s.bytes() {
+        freq[b as usize] += 1;
+        len += 1;
+    }
+    let len_f = len as f32;
+    let mut entropy = 0.0;
+    for &count in &freq {
+        if count > 0 {
+            let p = count as f32 / len_f;
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
+}
+
+/// Avalia se um nome de domínio DNS (QNAME) apresenta padrões de DNS Tunneling / Exfiltração de dados
+#[allow(dead_code)]
+pub fn evaluate_dns_tunneling(qname: &str) -> Option<(f32, &'static str)> {
+    let clean = qname.trim().trim_end_matches('.');
+    if clean.is_empty() {
+        return None;
+    }
+
+    let labels: Vec<&str> = clean.split('.').collect();
+    for label in &labels {
+        if label.len() >= 18 {
+            let entropy = calculate_entropy(label);
+            if entropy >= 3.4 || label.len() >= 32 {
+                return Some((entropy, "Alta entropia / Exfiltração de dados"));
+            }
+            let is_hex = label.len() >= 24 && label.chars().all(|c| c.is_ascii_hexdigit());
+            if is_hex {
+                return Some((entropy, "Possível túnel DNS (Codificação Hexadecimal)"));
+            }
+        }
+    }
+
+    if clean.len() >= 45 {
+        let entropy = calculate_entropy(clean);
+        if entropy >= 3.3 {
+            return Some((entropy, "Comprimento anormal e entropia de túnel DNS"));
+        }
+    }
+
+    None
+}
+
+/// Extrai os maiores geradores de tráfego (Top Talkers) ordenados por número de incidentes/hits
+pub fn get_top_talkers(incidents: &[Incident], limit: usize) -> Vec<(String, usize, String, String, u8)> {
+    let mut stats: std::collections::HashMap<String, (usize, String, String, u8)> = std::collections::HashMap::new();
+
+    for inc in incidents {
+        let entry = stats.entry(inc.ip.clone()).or_insert((0, inc.country.clone(), inc.isp.clone(), inc.threat_score));
+        entry.0 += inc.hit_count.max(1);
+        if inc.threat_score > entry.3 {
+            entry.3 = inc.threat_score;
+        }
+    }
+
+    let mut list: Vec<(String, usize, String, String, u8)> = stats
+        .into_iter()
+        .map(|(ip, (hits, country, isp, score))| (ip, hits, country, isp, score))
+        .collect();
+
+    list.sort_by(|a, b| b.1.cmp(&a.1));
+    list.truncate(limit);
+    list
+}
+
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
 pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned: bool) {
     let url = webhook_url.trim().to_string();
@@ -2231,5 +2438,85 @@ mod tests {
         let alerts = check_arp_table(&mut known);
         // Na primeira execução inicial, mapeia a tabela sem disparar falso positivo
         assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn test_calculate_entropy_and_dns_tunneling() {
+        // String monótona tem entropia 0.0
+        assert_eq!(calculate_entropy("aaaaaaaaaa"), 0.0);
+
+        // String curta normal
+        assert!(calculate_entropy("google") < 3.0);
+
+        // Subdomínio normal não dispara alarme
+        assert!(evaluate_dns_tunneling("www.google.com").is_none());
+        assert!(evaluate_dns_tunneling("api.github.com").is_none());
+
+        // Subdomínio longo com alta entropia (exfiltração / beaconing)
+        let exfil_domain = "dGVzdF9leGZpbHRyYXRpb25fZGF0YV8xMjM0NTY=.tunnel.evil.com";
+        let res = evaluate_dns_tunneling(exfil_domain);
+        assert!(res.is_some());
+        let (entropy, _) = res.unwrap();
+        assert!(entropy >= 3.4);
+
+        // Subdomínio hexadecimal longo (túnel tipo dnscat2)
+        let hex_tunnel = "4a667364666b6c6a7364666b6c6a7364.c2.attacker.net";
+        assert!(evaluate_dns_tunneling(hex_tunnel).is_some());
+    }
+
+    #[test]
+    fn test_format_bandwidth() {
+        assert_eq!(format_bandwidth(500.0), "500 B/s");
+        assert_eq!(format_bandwidth(1500.0), "1.5 KB/s");
+        assert_eq!(format_bandwidth(2_500_000.0), "2.38 MB/s");
+    }
+
+    #[test]
+    fn test_sample_network_throughput_runs() {
+        let mut sampler = ThroughputSampler::default();
+        let _ = sample_network_throughput(&mut sampler);
+    }
+
+    #[test]
+    fn test_get_top_talkers() {
+        let incidents = vec![
+            Incident {
+                timestamp: "2026-11-12 12:00:00".to_string(),
+                ip: "10.0.0.1".to_string(),
+                port: 22,
+                service: "SSH".to_string(),
+                severity: "CRÍTICO".to_string(),
+                country: "PT".to_string(),
+                city: "Porto".to_string(),
+                isp: "Vodafone".to_string(),
+                rdns: Some("-".to_string()),
+                payload: None,
+                threat_score: 80,
+                hit_count: 5,
+            },
+            Incident {
+                timestamp: "2026-11-12 12:01:00".to_string(),
+                ip: "10.0.0.2".to_string(),
+                port: 80,
+                service: "HTTP".to_string(),
+                severity: "ALERTA".to_string(),
+                country: "US".to_string(),
+                city: "NY".to_string(),
+                isp: "Cloudflare".to_string(),
+                rdns: Some("-".to_string()),
+                payload: None,
+                threat_score: 40,
+                hit_count: 10,
+            },
+        ];
+
+        let top = get_top_talkers(&incidents, 5);
+        assert_eq!(top.len(), 2);
+        // 10.0.0.2 teve 10 hits, deve ser o primeiro
+        assert_eq!(top[0].0, "10.0.0.2");
+        assert_eq!(top[0].1, 10);
+        // 10.0.0.1 teve 5 hits
+        assert_eq!(top[1].0, "10.0.0.1");
+        assert_eq!(top[1].1, 5);
     }
 }

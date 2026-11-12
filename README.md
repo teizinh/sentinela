@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.10-green.svg" alt="Version 0.3.10">
+  <img src="https://img.shields.io/badge/Version-0.4.0-green.svg" alt="Version 0.4.0">
 </p>
 
 ---
@@ -20,8 +20,11 @@ It does not require a separate server, database or cloud account. It runs as a s
 
 ---
 
-## Security Operations & Threat Intel (v0.3.10)
+## Security Operations & Threat Intel (v0.4.0)
 
+- **🍯 Anti-Ransomware Honeyfile Canary Watcher:** Active deception sensor that deploys canary credentials (`.env`) monitored via Linux kernel `inotify`. Instantly catches unauthorized reads, modifications or encryption attempts by ransomware/attackers and triggers critical SOC alerts (MITRE `T1486`).
+- **📊 Real-time Network Telemetry & Top Talkers:** Live sampling of `/proc/net/dev` calculating RX/TX download/upload rates (`↓ KB/s | ↑ KB/s`) in the SOC dashboard and ranking top traffic generators (*Top Talkers*) in the `[M]` Metrics panel.
+- **🛰️ DNS Tunneling & Exfiltration Watchdog:** Shannon entropy analysis on port 53 DNS queries (QNAME), detecting data exfiltration, high-entropy beacons, and covert tunnels (MITRE `T1071.004` / `T1048`).
 - **🔄 Concurrent Instance Detection & Conflict Resolution:** Startup watchdog scans `/proc` for existing Sentinela processes. Prompts the user interactively (`[S/n]`) to gracefully terminate previous instances and reclaim honeypot ports, or automatically with `-k` / `--kill-existing`.
 - **🌍 [G] GeoIP & Attack Origins Modal:** Interactive SOC distribution modal featuring ASCII bar charts of top attacking nations (with flag mappings) and top attacking ISPs/ASNs.
 - **🛡️ ARP Cache Poisoning & MITM Guard:** Continuous `/proc/net/arp` watchdog that alerts on rogue MAC changes or gateway cloning attacks (mapped to MITRE ATT&CK `T1557.002`).
