@@ -106,6 +106,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .filter(|s| !s.is_empty())
         .or(file_config.alerts.webhook_url.clone());
 
+    let mut hub_url: Option<String> = env::var("SENTINELA_HUB_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let mut theme = match file_config.ui.theme.to_lowercase().as_str() {
         "matrix" => Theme::Matrix,
         "midnight" => Theme::Midnight,
@@ -153,6 +158,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if raw_args[i] == "--webhook" && i + 1 < raw_args.len() {
             webhook_url = Some(raw_args[i + 1].clone());
             i += 2;
+        } else if raw_args[i] == "--hub" && i + 1 < raw_args.len() {
+            hub_url = Some(raw_args[i + 1].clone());
+            i += 2;
         } else if raw_args[i] == "--whitelist" && i + 1 < raw_args.len() {
             for ip in raw_args[i + 1].split(&[',', ' ', ';'][..]) {
                 let clean = ip.trim();
@@ -191,15 +199,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         traps::DEFAULT_TRAP_PORTS.to_vec()
     };
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    let test_mode = env::var_os("SENTINELA_TEST_MODE").is_some() || raw_args.iter().any(|a| a == "--test-mode");
+
+    if (!io::stdin().is_terminal() || !io::stdout().is_terminal()) && !test_mode {
         return Err("O dashboard requer um terminal: usa ssh -t host sentinela".into());
     }
 
     let kill_existing_cli = raw_args
         .iter()
         .any(|a| a == "-k" || a == "--kill-existing" || a == "--replace");
-
-    let test_mode = env::var_os("SENTINELA_TEST_MODE").is_some() || raw_args.iter().any(|a| a == "--test-mode");
 
     // Deteção de instâncias concorrentes do Sentinela
     let other_instances = network::find_other_sentinela_instances();
@@ -259,6 +267,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let log_file_name = traps::get_log_filename();
     let local_ips = network::get_all_local_ips();
     let sys_info = network::get_system_info();
+    let default_hostname = env::var("HOSTNAME")
+        .or_else(|_| env::var("HOST"))
+        .unwrap_or_else(|_| "sentinela-host".to_string());
+    let node_id = env::var("SENTINELA_NODE_ID").unwrap_or_else(|_| default_hostname.clone());
+    let node_name = env::var("SENTINELA_NODE_NAME").unwrap_or_else(|_| format!("{} ({})", default_hostname, sys_info.distro));
+    let node_ip = local_ips.clone();
+
+    if let Some(ref hub) = hub_url {
+        network::send_hub_heartbeat(hub, &node_id, &node_name, &node_ip, env!("CARGO_PKG_VERSION"));
+    }
+
     let mut lang = match file_config.ui.language.to_lowercase().as_str() {
         "en" => Language::En,
         _ => network::detect_language(),
@@ -536,6 +555,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 {
                     network::send_webhook_alert(url, &incident, was_auto_banned);
                 }
+            }
+
+            // Encaminha telemetria de incidentes em tempo real para o Sentinela Hub
+            if let Some(ref hub) = hub_url {
+                network::send_hub_incident(hub, &node_id, &incident);
             }
 
             log_batch.push(incident.clone());
@@ -1317,6 +1341,7 @@ fn print_help() {
     println!("  --init-config     Gera ficheiro sentinela.toml com definições recomendadas");
     println!("  --auto-ban        Ativa bloqueio automático no firewall (Threat Score >= 80)");
     println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
+    println!("  --hub <URL>       Agrega e correlaciona telemetria no Sentinela Hub (ex: http://127.0.0.1:8765)");
     println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)");
     println!("  --theme <TEMA>    Tema visual inicial: cyber, matrix, midnight, contrast");
     println!("  --simulate        Injeta incidentes simulados no arranque para testes e demos");
