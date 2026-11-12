@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 BIN_PATH="$1"
 TARGET_NAME="$2"
@@ -109,7 +109,11 @@ rm -rf "$DEB_ROOT"
 # 3. Empacota RPM (.rpm) para x86_64 se alien estiver disponivel
 if [ "$TARGET_NAME" = "x86_64-unknown-linux-gnu" ] && [ -f "${ASSET_NAME}.deb" ]; then
     if command -v alien >/dev/null 2>&1; then
-        alien --to-rpm --scripts "${ASSET_NAME}.deb"
+        if [ "$(id -u)" -eq 0 ]; then
+            alien --to-rpm --scripts --keep-version "${ASSET_NAME}.deb"
+        else
+            sudo -n alien --to-rpm --scripts --keep-version "${ASSET_NAME}.deb"
+        fi
         mv sentinela-*.rpm "${ASSET_NAME}.rpm" 2>/dev/null || true
         if [ -f "${ASSET_NAME}.rpm" ]; then
             calc_sha256 "${ASSET_NAME}.rpm" > "${ASSET_NAME}.rpm.sha256"

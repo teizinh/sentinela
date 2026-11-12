@@ -2,75 +2,97 @@ name: Release Sentinela
 
 "on":
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag de versao para lancamento (ex: v0.3.0)'
-        required: false
-        default: 'v0.3.0'
+        description: 'Tag existente a compilar (igual a v + versão do Cargo.toml)'
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  build-linux:
-    name: Build (Linux x86_64)
-    runs-on: ubuntu-22.04
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: sentinela-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: sentinela-linux-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: sentinela-macos-x86_64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset: sentinela-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: sentinela-windows-x64
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
         with:
-          targets: x86_64-unknown-linux-gnu
-
-      - name: Install alien for RPM packaging
+          ref: ${{ github.event.release.tag_name || inputs.tag_name || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name || github.ref_name }}
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          if [ "$RELEASE_TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $RELEASE_TAG does not match Cargo.toml v$VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Test mobile terminal
+        if: runner.os == 'Linux'
+        env:
+          SENTINELA_TEST_BINARY: ${{ github.workspace }}/target/${{ matrix.target }}/release/sentinela
+        run: python3 scripts/test-mobile.py
+      - name: Install Linux packaging tools
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y alien dpkg-dev
-
-      - name: Build Release Binary
-        run: cargo build --release --target x86_64-unknown-linux-gnu
-
-      - name: Package Linux Assets
+      - name: Package Unix assets
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG_VER="${GITHUB_REF#refs/tags/v}"
-          if [ -z "$TAG_VER" ] || [ "$TAG_VER" = "$GITHUB_REF" ]; then
-            TAG_VER="${{ github.event.inputs.tag_name }}"
-            TAG_VER="${TAG_VER#v}"
-          fi
-          bash scripts/package-linux.sh target/x86_64-unknown-linux-gnu/release/sentinela x86_64-unknown-linux-gnu sentinela-linux-x86_64 "${TAG_VER:-0.3.1}"
-
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-assets
-          path: |
-            *.tar.gz
-            *.deb
-            *.rpm
-            *.sha256
-
-  build-windows:
-    name: Build (Windows x64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Build Release Binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Package Windows Assets (Zip & NSIS Setup)
+          bash scripts/package-linux.sh "target/$TARGET/release/sentinela" "$TARGET" "$ASSET" "$VERSION"
+          test -f "$ASSET.tar.gz"
+          if [ "$RUNNER_OS" = "Linux" ]; then test -f "$ASSET.deb"; fi
+          if [ "$TARGET" = "x86_64-unknown-linux-gnu" ]; then test -f "$ASSET.rpm"; fi
+      - if: runner.os == 'Windows'
+        name: Package Windows Assets (Zip & NSIS Setup)
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/sentinela.exe" -Destination dist/
@@ -86,64 +108,49 @@ jobs:
 
           # 2. Instalador Grafico Oficial NSIS (Setup Wizard)
           choco install -y nsis
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           $makensisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
           if (-not (Test-Path $makensisPath)) {
             $makensisPath = "makensis"
           }
-          & $makensisPath scripts/installer.nsi
+          & $makensisPath "/DVERSION=$env:VERSION" scripts/installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS packaging failed" }
           $setupExe = "sentinela-windows-x64-setup.exe"
           $hashSetup = (Get-FileHash -Algorithm SHA256 $setupExe).Hash.ToLower()
           "$hashSetup  $setupExe" | Out-File -Encoding ascii "$setupExe.sha256"
 
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: windows-assets
+          name: ${{ matrix.asset }}
+          if-no-files-found: error
           path: |
+            *.tar.gz
+            *.deb
+            *.rpm
             *.zip
-            *.exe
+            *-setup.exe
             *.sha256
 
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-windows]
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
-
-      - name: Generate Checksums
-        shell: bash
+      - name: Verify and combine checksums
+        working-directory: release-assets
         run: |
-          cd release-assets
           cat *.sha256 > SHA256SUMS.txt
-          rm -f *.sha256
-          echo "=== Checksums gerados ==="
-          cat SHA256SUMS.txt
-
-      - name: Determine Release Tag
-        id: get_tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v2
+          sha256sum --check SHA256SUMS.txt
+          rm -- *.sha256
+      - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_tag.outputs.tag }}
-          name: "Sentinela ${{ steps.get_tag.outputs.tag }}"
-          draft: false
-          prerelease: false
+          tag_name: ${{ github.event.release.tag_name || inputs.tag_name || github.ref_name }}
           generate_release_notes: true
-          files: |
-            release-assets/*
+          fail_on_unmatched_files: true
+          files: release-assets/*

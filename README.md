@@ -8,8 +8,8 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.7-green.svg" alt="Version 0.3.7">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
+  <img src="https://img.shields.io/badge/Version-0.3.8-green.svg" alt="Version 0.3.8">
 </p>
 
 ---
@@ -17,6 +17,17 @@
 Sentinela runs on your machine and watches your network interfaces in real time. It detects port scans (including Nmap SYN stealth, NULL, FIN and XMAS scans), catches anything that connects to configurable honeypot ports, and lets you cut all network access instantly if needed. Everything is visible through a terminal dashboard that works from a desktop down to an SSH session on a phone.
 
 It does not require a separate server, database or cloud account. It runs as a single binary.
+
+---
+
+## Remote & SSH Hardening (Mobile & Headless)
+
+Sentinela includes first-class protections for running over SSH on remote servers, cloud VPS instances and mobile terminals:
+- **Anti-Lockout SSH Whitelist:** Automatically parses `$SSH_CONNECTION` on startup and permanently whitelists your peer IP so auto-ban never cuts off your own SSH session.
+- **Remote Killswitch Safety:** If an active SSH session is detected (`$SSH_CONNECTION` or `$SSH_TTY`), pressing `[K]` is safely intercepted with an on-screen toast to prevent locking yourself out of the remote machine.
+- **RAII TerminalGuard:** Restores terminal state (`disable_raw_mode` and `LeaveAlternateScreen`) cleanly on normal exit, error propagation, or unwinding panics.
+- **Low-Bandwidth 4 Hz Idle Polling:** Dynamically idles at 250 ms event polling (~4 FPS) to reduce mobile data usage, SSH packet overhead, and battery drain.
+- **Linear O(n) Marquee & Visible Row Viewport:** Optimized column calculations and table viewport slicing (`.take()`) for blazing-fast rendering even with thousands of logged incidents.
 
 ---
 
@@ -39,10 +50,13 @@ irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1
 | Linux (Debian / Ubuntu / Mint) | `.deb` | `sentinela-linux-x86_64.deb` |
 | Linux (Fedora / RHEL / openSUSE) | `.rpm` | `sentinela-linux-x86_64.rpm` |
 | Linux (universal) | `.tar.gz` | `sentinela-linux-x86_64.tar.gz` |
+| Linux ARM64 | `.deb`, `.tar.gz` | `sentinela-linux-arm64.*` |
+| macOS Intel | `.tar.gz` | `sentinela-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `.tar.gz` | `sentinela-macos-arm64.tar.gz` |
 | Windows | Installer | `sentinela-windows-x64-setup.exe` |
 | Windows | Portable zip | `sentinela-windows-x64.zip` |
 
-All releases are on the [Releases page](https://github.com/teizinh/sentinela/releases). Each file has a corresponding `.sha256` checksum. A combined `SHA256SUMS.txt` is included in every release.
+All releases are on the [Releases page](https://github.com/teizinh/sentinela/releases). A combined `SHA256SUMS.txt` is included in every release.
 
 ---
 
@@ -286,4 +300,9 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-*Developed by [teizinh](https://github.com/teizinh)*
+*Developed by [teizinh](https://github.com/teizinh). Special thanks to [SirEntr0pyy](https://github.com/SirEntr0pyy) for SSH & mobile optimization ideas.*
+
+## Multi-Platform Builds & CI/CD
+
+Every push to main and tag release runs comprehensive automated tests across Linux, Windows and macOS.
+The release workflow packages Linux (x86_64, ARM64), macOS (Intel, Apple Silicon) and Windows x64 binaries, computing verified SHA-256 checksums automatically.

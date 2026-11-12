@@ -1,6 +1,6 @@
 [package]
 name = "sentinela"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 
 [dependencies]
@@ -21,3 +21,11 @@ toml = "0.8"
 # Em Windows e macOS, o Sentinela opera através do motor TCP assíncrono nativo sem drivers adicionais.
 [target.'cfg(target_os = "linux")'.dependencies]
 pnet = "0.35"
+
+
+# Smaller distributable binary; retain unwinding for terminal recovery.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
