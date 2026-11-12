@@ -186,6 +186,18 @@ pub struct MitreTechnique {
     pub url: String,
 }
 
+/// Representa uma conexão ou socket de rede ativo no sistema hospedeiro
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SocketInfo {
+    pub proto: String,
+    pub state: String,
+    pub local_addr: String,
+    pub foreign_addr: String,
+    pub pid_process: String,
+    pub is_honeypot: bool,
+    pub is_external: bool,
+}
+
 /// Determina a técnica e tática MITRE ATT&CK correspondente ao incidente
 pub fn map_to_mitre(severity: &str, port: u16, payload: Option<&str>) -> MitreTechnique {
     if severity == "SWEEP" {

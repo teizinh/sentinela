@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.6-green.svg" alt="Version 0.3.6">
+  <img src="https://img.shields.io/badge/Version-0.3.7-green.svg" alt="Version 0.3.7">
 </p>
 
 ---
@@ -177,6 +177,7 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 | Key | Action |
 |---|---|
 | `q` / `Ctrl+C` | Exit (cleans up any active killswitch and temporary bans) |
+| `c` | Open live active network sockets & connections inspector (LISTEN, ESTABLISHED) |
 | `Enter` | Open deep forensic inspection modal for selected incident |
 | `b` | Surgically ban / unban selected attacker IP (DROP firewall rule) |
 | `u` | Add / remove selected IP to/from trusted whitelist (immune to auto-ban) |
@@ -186,7 +187,7 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 | `o` | Spawn dynamic live honeypot trap on specified TCP port |
 | `m` | Executive SOC metrics & forensic telemetry analytics panel |
 | `s` | Inject diagnostic test attack simulation sequence into SOC |
-| `e` | Export session Threat Intel (JSON, CSV, PCAP, CEF, and RFC 5424 Syslog) |
+| `e` | Export session Threat Intel (JSON, CSV, PCAP, CEF, Syslog, Markdown, and HTML) |
 | `a` | Toggle audio bell alarm and desktop notifications |
 | `i` | Open / close help modal |
 | `w` | Open / close port security audit |

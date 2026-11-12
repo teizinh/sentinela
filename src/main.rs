@@ -206,6 +206,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_metrics = false;
     let mut show_port_modal = false;
     let mut port_input = String::new();
+    let mut show_sockets = false;
+    let mut sockets_list: Vec<crate::models::SocketInfo> = Vec::new();
     let mut banned_ips: HashSet<String> = HashSet::new();
     let mut audio_alerts = file_config.alerts.audio_alerts;
     let mut toast_message: Option<(String, Instant)> = loaded_config_path.map(|p| {
@@ -458,6 +460,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 show_metrics,
                 show_port_modal,
                 port_input: &port_input,
+                show_sockets,
+                sockets_list: &sockets_list,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -555,7 +559,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                if show_help || show_warnings || show_incident_modal || show_metrics {
+                if show_help || show_warnings || show_incident_modal || show_metrics || show_sockets {
                     match key.code {
                         KeyCode::Char('a' | 'A') => {
                             audio_alerts = !audio_alerts;
@@ -572,20 +576,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             };
                             toast_message = Some((msg.to_string(), Instant::now()));
                         }
+                        KeyCode::Char('c' | 'C') => {
+                            show_sockets = false;
+                            modal_scroll = 0;
+                        }
                         KeyCode::Char('i' | 'I') => {
                             show_help = false;
                             show_incident_modal = false;
                             show_metrics = false;
+                            show_sockets = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('w' | 'W') => {
                             show_warnings = false;
                             show_incident_modal = false;
                             show_metrics = false;
+                            show_sockets = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('m' | 'M') => {
                             show_metrics = false;
+                            show_sockets = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Esc | KeyCode::Enter => {
@@ -593,6 +604,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             show_warnings = false;
                             show_incident_modal = false;
                             show_metrics = false;
+                            show_sockets = false;
                             modal_scroll = 0;
                         }
                         // Banir / Desbanir IP do atacante dentro da modal de raio-X
@@ -653,13 +665,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                        // Exportar relatório completo de Threat Intel
+                        // Exportar relatório completo de Threat Intel (JSON, CSV, PCAP, CEF, Syslog, Markdown e HTML)
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f, pcap_f, cef_f, syslog_f)) => {
+                                Ok((json_f, _csv_f, _pcap_f, _cef_f, _syslog_f, _md_f, _html_f)) => {
+                                    let base = json_f.trim_end_matches(".json");
                                     let msg = match lang {
-                                        Language::Pt => format!("[✓] 5 Ficheiros exportados: {}, {}, {}, {} e {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
-                                        Language::En => format!("[✓] 5 Files exported: {}, {}, {}, {} and {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                        Language::Pt => format!("[✓] 7 Relatórios exportados (JSON, CSV, PCAP, CEF, Syslog, MD, HTML): {}", base),
+                                        Language::En => format!("[✓] 7 Reports exported (JSON, CSV, PCAP, CEF, Syslog, MD, HTML): {}", base),
                                     };
                                     toast_message = Some((msg, Instant::now()));
                                 }
@@ -753,13 +766,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                        // Exportar relatório completo de Threat Intel (JSON, CSV, PCAP, CEF e Syslog)
+                        // Inspecionar conexões e sockets ativos do sistema em tempo real
+                        KeyCode::Char('c' | 'C') => {
+                            sockets_list = network::get_active_sockets(&trap_ports);
+                            show_sockets = true;
+                            modal_scroll = 0;
+                        }
+                        // Exportar relatório completo de Threat Intel (JSON, CSV, PCAP, CEF, Syslog, Markdown e HTML)
                         KeyCode::Char('e' | 'E') => {
                             match network::export_threat_report(&incidents, &banned_ips, &whitelisted_ips, &sys_info, lang) {
-                                Ok((json_f, csv_f, pcap_f, cef_f, syslog_f)) => {
+                                Ok((json_f, _csv_f, _pcap_f, _cef_f, _syslog_f, _md_f, _html_f)) => {
+                                    let base = json_f.trim_end_matches(".json");
                                     let msg = match lang {
-                                        Language::Pt => format!("[✓] 5 Ficheiros exportados: {}, {}, {}, {} e {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
-                                        Language::En => format!("[✓] 5 Files exported: {}, {}, {}, {} and {}", json_f, csv_f, pcap_f, cef_f, syslog_f),
+                                        Language::Pt => format!("[✓] 7 Relatórios exportados (JSON, CSV, PCAP, CEF, Syslog, MD, HTML): {}", base),
+                                        Language::En => format!("[✓] 7 Reports exported (JSON, CSV, PCAP, CEF, Syslog, MD, HTML): {}", base),
                                     };
                                     toast_message = Some((msg, Instant::now()));
                                 }
@@ -1095,7 +1115,8 @@ fn print_help() {
     println!("  o               Ativar armadilha honeypot dinâmica em direto (porta TCP)");
     println!("  m               Painel executivo de métricas forenses e telemetria SOC");
     println!("  s               Simulação diagnóstica de ataques no SOC");
-    println!("  e               Exportar Threat Intel (JSON, CSV, PCAP, CEF e Syslog RFC 5424)");
+    println!("  c               Inspecionar sockets e conexões ativas do sistema (LISTEN, ESTABLISHED)");
+    println!("  e               Exportar Threat Intel (JSON, CSV, PCAP, CEF, Syslog, Markdown e HTML)");
     println!("  a               Ativar / Desativar alerta sonoro (Bell) e notificações");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
     println!("  w               Consultar auditor de portas vulneráveis abertas");

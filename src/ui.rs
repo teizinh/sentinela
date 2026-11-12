@@ -1,4 +1,4 @@
-use crate::models::{Incident, Language, PortWarning, SeverityFilter, SysInfo, Theme};
+use crate::models::{Incident, Language, PortWarning, SeverityFilter, SocketInfo, SysInfo, Theme};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -43,6 +43,8 @@ pub struct UiContext<'a> {
     pub show_metrics: bool,
     pub show_port_modal: bool,
     pub port_input: &'a str,
+    pub show_sockets: bool,
+    pub sockets_list: &'a [SocketInfo],
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -245,6 +247,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         show_metrics,
         show_port_modal,
         port_input,
+        show_sockets,
+        sockets_list,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -707,18 +711,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         toast.to_string()
     } else if screen_width < 60 {
         match lang {
-            Language::Pt => " [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [O]Porta [M]Met [Q]Sair".to_string(),
-            Language::En => " [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [O]Port [M]Met [Q]Quit".to_string(),
+            Language::Pt => " [C]Sock [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [O]Porta [M]Met [Q]Sair".to_string(),
+            Language::En => " [C]Sock [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [O]Port [M]Met [Q]Quit".to_string(),
         }
     } else if screen_width < 95 {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [O] Porta | [M] Métricas | [Q] Sair".to_string(),
-            Language::En => " [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [O] Port | [M] Metrics | [Q] Quit".to_string(),
+            Language::Pt => " [C] Sockets | [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [O] Porta | [M] Métricas | [Q] Sair".to_string(),
+            Language::En => " [C] Sockets | [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [O] Port | [M] Metrics | [Q] Quit".to_string(),
         }
     } else {
         match lang {
-            Language::Pt => " [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [O] +Porta | [M] Métricas | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [I] Manual | [Q] Sair ".to_string(),
-            Language::En => " [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [O] +Port | [M] Metrics | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [I] Manual | [Q] Quit ".to_string(),
+            Language::Pt => " [C] Sockets | [↵] Raio-X | [B] Banir | [U] Whitelist | [X] Auto-Ban | [T] Tema | [/] Busca | [O] +Porta | [M] Métricas | [S] Simulação | [E] Exportar | [A] Alertas | [K] Kill | [I] Manual | [Q] Sair ".to_string(),
+            Language::En => " [C] Sockets | [↵] Deep Inspection | [B] Ban | [U] Whitelist | [X] Auto-Ban | [T] Theme | [/] Search | [O] +Port | [M] Metrics | [S] Simulate | [E] Export | [A] Alerts | [K] Kill | [I] Manual | [Q] Quit ".to_string(),
         }
     };
 
@@ -841,6 +845,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        Portas ativas: {}\n\n\
                      • ATALHOS:\n\
                        [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
+                       [C]   Sockets: Inspecionar conexões e portas ativas no sistema em tempo real.\n\
                        [↵]   Raio-X: Inspeção forense aprofundada do incidente selecionado.\n\
                        [B]   Banir/Desbanir: Bloqueio cirúrgico no firewall (DROP).\n\
                       [X]   Auto-Ban: Alterna bloqueio automatico de ameacas (Score >= 80).\n\
@@ -850,7 +855,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                       [M]   Métricas: Painel executivo de telemetria forense e estatísticas SOC.\n\
                       [S]   Simular: Injeta ataques de teste para demonstracao e diagnostico.\n\
                       [U]   Whitelist: Adiciona/Remove IP da lista de confianca (imune a auto-ban).\n\
-                      [E]   Exportar: Threat Intel completa (JSON, CSV, PCAP, CEF e Syslog RFC 5424).\n\
+                      [E]   Exportar: Threat Intel completa (JSON, CSV, PCAP, CEF, Syslog, Markdown e HTML).\n\
                       [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                       [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
                       [A]   Alertas: Ativar/Desativar som de alarme e notificações desktop.\n\
@@ -887,6 +892,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        Active trap ports: {}\n\n\
                      • SHORTCUTS:\n\
                        [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
+                       [C]   Sockets: Live inspection of active network connections and processes.\n\
                        [↵]   Forensic X-Ray: Deep inspection modal of selected incident.\n\
                        [B]   Ban/Unban: Surgical firewall drop rule for attacker IP.\n\
                       [X]   Auto-Ban: Toggle automated blocking of high-threat IPs (Score >= 80).\n\
@@ -896,7 +902,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                       [M]   Metrics: Executive SOC telemetry and forensic attack stats.\n\
                       [S]   Simulate: Inject diagnostic test attacks into SOC.\n\
                       [U]   Whitelist: Add/Remove IP from trusted whitelist (immune to auto-ban).\n\
-                      [E]   Export: Full Threat Intel (JSON, CSV, PCAP, CEF, Syslog RFC 5424).\n\
+                      [E]   Export: Full Threat Intel (JSON, CSV, PCAP, CEF, Syslog, Markdown, HTML).\n\
                       [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                       [W]   Warnings: Checks risky listening ports and fix commands.\n\
                       [A]   Alerts: Toggle audio bell sound and desktop notifications.\n\
@@ -1318,6 +1324,81 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     .borders(Borders::ALL)
                     .title(title)
                     .style(Style::default().bg(Color::Black).fg(Color::Cyan)),
+            );
+
+        f.render_widget(modal_p, area);
+    }
+
+    // 7. Modal de Inspeção de Sockets e Conexões Ativas (Tecla C)
+    if show_sockets {
+        let area = centered_rect(modal_w, modal_h, f.area());
+        f.render_widget(Clear, area);
+
+        let title = match lang {
+            Language::Pt => " [C] INSPEÇÃO DE SOCKETS E CONEXÕES ATIVAS ",
+            Language::En => " [C] ACTIVE NETWORK SOCKETS & CONNECTIONS INSPECTOR ",
+        };
+        let final_title = format_modal_title(title, modal_scroll);
+
+        let mut body = String::new();
+        let total_sockets = sockets_list.len();
+        let listen_count = sockets_list.iter().filter(|s| s.state == "LISTEN" || s.state == "UNCONN").count();
+        let estab_count = sockets_list.iter().filter(|s| s.state == "ESTABLISHED").count();
+        let ext_count = sockets_list.iter().filter(|s| s.is_external).count();
+        let honeypot_count = sockets_list.iter().filter(|s| s.is_honeypot).count();
+
+        body.push_str(match lang {
+            Language::Pt => " PROTO  ESTADO       ENDEREÇO LOCAL         ENDEREÇO REMOTO        PROCESSO (PID)       CLASSIFICAÇÃO\n",
+            Language::En => " PROTO  STATE        LOCAL ADDRESS          FOREIGN ADDRESS        PROCESS (PID)        CLASSIFICATION\n",
+        });
+        body.push_str(" ───────────────────────────────────────────────────────────────────────────────────────────────────\n");
+
+        if sockets_list.is_empty() {
+            body.push_str(match lang {
+                Language::Pt => "   (Nenhum socket ou conexão detetada)\n",
+                Language::En => "   (No active sockets or connections detected)\n",
+            });
+        } else {
+            for s in sockets_list {
+                let badge = if s.is_honeypot {
+                    "[HONEYPOT]"
+                } else if s.is_external {
+                    "[EXT-CONN]"
+                } else if s.state == "LISTEN" || s.state == "UNCONN" {
+                    "[LISTEN]"
+                } else {
+                    "[LOCAL]"
+                };
+
+                let proc_display = if s.pid_process.len() > 20 {
+                    format!("{}...", &s.pid_process[..17])
+                } else {
+                    s.pid_process.clone()
+                };
+
+                body.push_str(&format!(
+                    " {:<6} {:<12} {:<22} {:<22} {:<20} {:<14}\n",
+                    s.proto, s.state, s.local_addr, s.foreign_addr, proc_display, badge
+                ));
+            }
+        }
+
+        body.push_str(" ───────────────────────────────────────────────────────────────────────────────────────────────────\n");
+        body.push_str(&format!(
+            " Sockets: {} | {} Listen | {} Estab | {} Ext | {} Honeypots  ──  [↑/↓ scroll | C/Esc fechar]\n",
+            total_sockets, listen_count, estab_count, ext_count, honeypot_count
+        ));
+
+        let modal_p = Paragraph::new(body)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
+            .scroll((modal_scroll, 0))
+            .alignment(Alignment::Left)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(final_title)
+                    .style(Style::default().bg(Color::Black).fg(Color::Green)),
             );
 
         f.render_widget(modal_p, area);

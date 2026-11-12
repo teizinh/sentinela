@@ -1,4 +1,4 @@
-use crate::models::{GeoResponse, Incident, Language, PortWarning, SysInfo};
+use crate::models::{GeoResponse, Incident, Language, PortWarning, SocketInfo, SysInfo};
 use get_if_addrs::get_if_addrs;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -629,14 +629,15 @@ pub fn generate_syslog_rfc5424(incidents: &[Incident], banned_ips: &std::collect
     out
 }
 
-/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON, CSV, captura PCAP (Wireshark), CEF e Syslog RFC 5424.
+/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON, CSV, captura PCAP (Wireshark), CEF, Syslog RFC 5424, Markdown e HTML.
+#[allow(clippy::type_complexity)]
 pub fn export_threat_report(
     incidents: &[Incident],
     banned_ips: &std::collections::HashSet<String>,
     whitelisted_ips: &std::collections::HashSet<String>,
     sys_info: &SysInfo,
     _lang: Language,
-) -> Result<(String, String, String, String, String), String> {
+) -> Result<(String, String, String, String, String, String, String), String> {
     let now = chrono::Local::now();
     let base_name = now.format("sentinela_report_%Y-%m-%d_%H-%M-%S").to_string();
     let json_name = format!("{}.json", base_name);
@@ -714,7 +715,408 @@ pub fn export_threat_report(
     let syslog_content = generate_syslog_rfc5424(incidents, banned_ips, &hostname);
     std::fs::write(&syslog_name, syslog_content).map_err(|e| format!("Erro ao gravar Syslog: {}", e))?;
 
-    Ok((json_name, csv_name, pcap_name, cef_name, syslog_name))
+    let now_str = now.to_rfc3339();
+    let md_content = generate_markdown_report(incidents, banned_ips, whitelisted_ips, sys_info, &now_str);
+    let md_name = format!("{}.md", base_name);
+    std::fs::write(&md_name, md_content).map_err(|e| format!("Erro ao gravar Markdown: {}", e))?;
+
+    let html_content = generate_html_report(incidents, banned_ips, whitelisted_ips, sys_info, &now_str);
+    let html_name = format!("{}.html", base_name);
+    std::fs::write(&html_name, html_content).map_err(|e| format!("Erro ao gravar HTML: {}", e))?;
+
+    Ok((json_name, csv_name, pcap_name, cef_name, syslog_name, md_name, html_name))
+}
+
+/// Gera um relatório executivo de Threat Intelligence estruturado em formato Markdown profissional
+pub fn generate_markdown_report(
+    incidents: &[Incident],
+    banned_ips: &std::collections::HashSet<String>,
+    whitelisted_ips: &std::collections::HashSet<String>,
+    sys_info: &SysInfo,
+    now_str: &str,
+) -> String {
+    let mut unique_ips = std::collections::HashSet::new();
+    let mut max_score = 0;
+    let mut mitre_counts: std::collections::HashMap<String, (String, String, usize)> = std::collections::HashMap::new();
+    let mut port_counts: std::collections::HashMap<u16, (String, usize)> = std::collections::HashMap::new();
+
+    for inc in incidents {
+        unique_ips.insert(&inc.ip);
+        if inc.threat_score > max_score {
+            max_score = inc.threat_score;
+        }
+        let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+        let entry = mitre_counts.entry(mitre.id.clone()).or_insert((mitre.name, mitre.tactic, 0));
+        entry.2 += 1;
+
+        let p_entry = port_counts.entry(inc.port).or_insert((inc.service.clone(), 0));
+        p_entry.1 += inc.hit_count.max(1);
+    }
+
+    let mut md = String::new();
+    md.push_str("# 🛡️ Sentinela — Relatório Executivo de Incidentes e Threat Intelligence\n\n");
+    md.push_str(&format!("**Data de Geração:** `{}`  \n", now_str));
+    md.push_str(&format!("**Versão:** `v{}`  \n", env!("CARGO_PKG_VERSION")));
+    md.push_str(&format!("**Sistema Anfitrião:** {} ({}) | Kernel {}\n\n", sys_info.distro, sys_info.arch, sys_info.kernel));
+    md.push_str("---\n\n");
+
+    md.push_str("## 1. Resumo Executivo da Sessão\n\n");
+    md.push_str("| Métrica | Valor |\n|---|---|\n");
+    md.push_str(&format!("| **Total de Incidentes Capturados** | {} |\n", incidents.len()));
+    md.push_str(&format!("| **Endereços IP Maliciosos Únicos** | {} |\n", unique_ips.len()));
+    md.push_str(&format!("| **IPs Bloqueados no Firewall (DROP)** | {} |\n", banned_ips.len()));
+    md.push_str(&format!("| **IPs Confiáveis na Whitelist** | {} |\n", whitelisted_ips.len()));
+    md.push_str(&format!("| **Threat Score Máximo Registado** | {} / 100 |\n\n", max_score));
+
+    md.push_str("## 2. Mapeamento da Matriz MITRE ATT&CK®\n\n");
+    md.push_str("| ID Técnica | Nome da Técnica | Tática | Ocorrências |\n|---|---|---|---|\n");
+    let mut sorted_mitre: Vec<(&String, &(String, String, usize))> = mitre_counts.iter().collect();
+    sorted_mitre.sort_by_key(|a| std::cmp::Reverse(a.1 .2));
+    for (id, (name, tactic, count)) in sorted_mitre {
+        md.push_str(&format!("| `{}` | {} | {} | **{}** |\n", id, name, tactic, count));
+    }
+    if mitre_counts.is_empty() {
+        md.push_str("| - | Nenhuma técnica identificada | - | 0 |\n");
+    }
+    md.push('\n');
+
+    md.push_str("## 3. Top Portas e Armadilhas Visadas\n\n");
+    md.push_str("| Porto | Serviço / Protocolo | Total de Hits |\n|---|---|---|\n");
+    let mut sorted_ports: Vec<(&u16, &(String, usize))> = port_counts.iter().collect();
+    sorted_ports.sort_by_key(|a| std::cmp::Reverse(a.1 .1));
+    for (port, (svc, hits)) in sorted_ports.iter().take(8) {
+        md.push_str(&format!("| `{}` | {} | **{}** |\n", port, svc, hits));
+    }
+    if port_counts.is_empty() {
+        md.push_str("| - | Nenhuma atividade de porto registada | 0 |\n");
+    }
+    md.push('\n');
+
+    md.push_str("## 4. Top Ameaças e Atacantes Identificados\n\n");
+    md.push_str("| Endereço IP | País / Cidade | ISP / Organização | Threat Score | Hits | Firewall |\n|---|---|---|---|---|---|\n");
+    let mut top_incidents = incidents.to_vec();
+    top_incidents.sort_by_key(|a| std::cmp::Reverse(a.threat_score));
+    let mut seen_ips = std::collections::HashSet::new();
+    for inc in top_incidents.iter().filter(|i| seen_ips.insert(&i.ip)).take(15) {
+        let is_banned = if banned_ips.contains(&inc.ip) { "⛔ BLOQUEADO" } else { "⚠️ ATIVO" };
+        let geo = format!("{} ({})", inc.country, inc.city);
+        md.push_str(&format!(
+            "| `{}` | {} | {} | **{}/100** | {} | {} |\n",
+            inc.ip, geo, inc.isp, inc.threat_score, inc.hit_count, is_banned
+        ));
+    }
+    if incidents.is_empty() {
+        md.push_str("| - | - | - | - | - | - |\n");
+    }
+    md.push('\n');
+
+    md.push_str("## 5. Medidas de Mitigação e Comandos de Firewall Recomendados\n\n");
+    md.push_str("```bash\n# Executar no terminal do host (com privilégios de root) para bloquear atacantes de alto risco:\n");
+    for ip in banned_ips {
+        md.push_str(&format!("iptables -A INPUT -s {} -j DROP\n", ip));
+    }
+    for inc in top_incidents.iter().filter(|i| i.threat_score >= 80 && !banned_ips.contains(&i.ip)).take(5) {
+        md.push_str(&format!("iptables -A INPUT -s {} -j DROP  # Score: {} ({})\n", inc.ip, inc.threat_score, inc.service));
+    }
+    md.push_str("```\n\n");
+    md.push_str("---\n*Relatório gerado automaticamente pelo **Sentinela HIDS & Honeypot** — Desenvolvido por Salvador Pontes.*\n");
+
+    md
+}
+
+/// Gera um relatório executivo de Threat Intelligence estruturado em formato HTML interativo com design Dark SOC
+pub fn generate_html_report(
+    incidents: &[Incident],
+    banned_ips: &std::collections::HashSet<String>,
+    _whitelisted_ips: &std::collections::HashSet<String>,
+    sys_info: &SysInfo,
+    now_str: &str,
+) -> String {
+    let mut unique_ips = std::collections::HashSet::new();
+    let mut max_score = 0;
+    for inc in incidents {
+        unique_ips.insert(&inc.ip);
+        if inc.threat_score > max_score {
+            max_score = inc.threat_score;
+        }
+    }
+
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html>\n<html lang=\"pt\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+    html.push_str("<title>Sentinela - Relatório Executivo de Ameaças</title>\n");
+    html.push_str("<style>\n");
+    html.push_str("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0f19; color: #e2e8f0; margin: 0; padding: 24px; }\n");
+    html.push_str(".container { max-width: 1100px; margin: 0 auto; }\n");
+    html.push_str(".header { background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); border: 1px solid #312e81; border-radius: 12px; padding: 24px; margin-bottom: 24px; }\n");
+    html.push_str(".header h1 { margin: 0 0 8px 0; color: #38bdf8; font-size: 26px; display: flex; align-items: center; gap: 10px; }\n");
+    html.push_str(".meta { color: #94a3b8; font-size: 13px; }\n");
+    html.push_str(".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }\n");
+    html.push_str(".card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 18px; text-align: center; }\n");
+    html.push_str(".card-val { font-size: 32px; font-weight: bold; color: #f8fafc; margin-top: 6px; }\n");
+    html.push_str(".card-val.crit { color: #ef4444; }\n");
+    html.push_str(".card-val.warn { color: #f59e0b; }\n");
+    html.push_str(".card-val.safe { color: #10b981; }\n");
+    html.push_str(".card-lbl { color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }\n");
+    html.push_str("table { width: 100%; border-collapse: collapse; margin-bottom: 24px; background: #1e293b; border-radius: 8px; overflow: hidden; }\n");
+    html.push_str("th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #334155; font-size: 14px; }\n");
+    html.push_str("th { background: #0f172a; color: #38bdf8; font-weight: 600; text-transform: uppercase; font-size: 12px; }\n");
+    html.push_str("tr:hover { background: #283548; }\n");
+    html.push_str(".badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }\n");
+    html.push_str(".badge-crit { background: #7f1d1d; color: #fecaca; border: 1px solid #b91c1c; }\n");
+    html.push_str(".badge-high { background: #7c2d12; color: #fed7aa; border: 1px solid #c2410c; }\n");
+    html.push_str(".badge-med { background: #713f12; color: #fef08a; border: 1px solid #a16207; }\n");
+    html.push_str(".badge-low { background: #164e63; color: #a5f3fc; border: 1px solid #0891b2; }\n");
+    html.push_str(".badge-ban { background: #450a0a; color: #fca5a5; }\n");
+    html.push_str(".code-block { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 13px; color: #38bdf8; overflow-x: auto; }\n");
+    html.push_str("footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 32px; }\n");
+    html.push_str("</style>\n</head>\n<body>\n<div class=\"container\">\n");
+
+    html.push_str("<div class=\"header\">\n");
+    html.push_str(&format!("<h1>🛡️ Sentinela SOC — Relatório de Incidentes v{}</h1>\n", env!("CARGO_PKG_VERSION")));
+    html.push_str(&format!("<div class=\"meta\">Gerado em: <strong>{}</strong> | Sistema: <strong>{} ({}) - Kernel {}</strong></div>\n", now_str, sys_info.distro, sys_info.arch, sys_info.kernel));
+    html.push_str("</div>\n");
+
+    html.push_str("<div class=\"grid\">\n");
+    html.push_str(&format!("<div class=\"card\"><div class=\"card-lbl\">Total Incidentes</div><div class=\"card-val\">{}</div></div>\n", incidents.len()));
+    html.push_str(&format!("<div class=\"card\"><div class=\"card-lbl\">Atacantes Únicos</div><div class=\"card-val warn\">{}</div></div>\n", unique_ips.len()));
+    html.push_str(&format!("<div class=\"card\"><div class=\"card-lbl\">IPs Bloqueados</div><div class=\"card-val crit\">{}</div></div>\n", banned_ips.len()));
+    html.push_str(&format!("<div class=\"card\"><div class=\"card-lbl\">Score Máximo</div><div class=\"card-val crit\">{}/100</div></div>\n", max_score));
+    html.push_str("</div>\n");
+
+    html.push_str("<h2>Incidentes e Ameaças Registadas</h2>\n");
+    html.push_str("<table><thead><tr><th>Timestamp</th><th>IP de Origem</th><th>Porto</th><th>Serviço</th><th>Gravidade</th><th>Score</th><th>País</th><th>ISP</th><th>Mitre ATT&CK</th><th>Ação</th></tr></thead><tbody>\n");
+    for inc in incidents.iter().take(30) {
+        let (badge_class, sev_label) = match inc.severity.as_str() {
+            "CRÍTICO" | "SWEEP" => ("badge-crit", "CRÍTICO"),
+            "SCAN" => ("badge-high", "SCAN"),
+            "MÉDIO" => ("badge-med", "MÉDIO"),
+            _ => ("badge-low", "ALERTA"),
+        };
+        let is_banned = banned_ips.contains(&inc.ip);
+        let action_badge = if is_banned { "<span class=\"badge badge-ban\">⛔ DROP</span>" } else { "<span class=\"meta\">Monitorizado</span>" };
+        let mitre = crate::models::map_to_mitre(&inc.severity, inc.port, inc.payload.as_deref());
+
+        html.push_str(&format!(
+            "<tr><td><code>{}</code></td><td><strong><code>{}</code></strong></td><td>{}</td><td>{}</td><td><span class=\"badge {}\">{}</span></td><td><strong>{}</strong></td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>\n",
+            inc.timestamp, inc.ip, inc.port, inc.service, badge_class, sev_label, inc.threat_score, inc.country, inc.isp, mitre.id, action_badge
+        ));
+    }
+    if incidents.is_empty() {
+        html.push_str("<tr><td colspan=\"10\" style=\"text-align:center;color:#64748b;\">Nenhum incidente registado nesta sessão</td></tr>\n");
+    }
+    html.push_str("</tbody></table>\n");
+
+    html.push_str("<h2>Comandos de Mitigação no Firewall</h2>\n");
+    html.push_str("<div class=\"code-block\">\n# Bloquear imediatamente atacantes com elevado risco via iptables:<br>\n");
+    for ip in banned_ips {
+        html.push_str(&format!("iptables -A INPUT -s {} -j DROP<br>\n", ip));
+    }
+    for inc in incidents.iter().filter(|i| i.threat_score >= 80 && !banned_ips.contains(&i.ip)).take(5) {
+        html.push_str(&format!("iptables -A INPUT -s {} -j DROP  # Score: {} ({})<br>\n", inc.ip, inc.threat_score, inc.service));
+    }
+    html.push_str("</div>\n");
+
+    html.push_str("<footer>Relatório gerado automaticamente pelo <strong>Sentinela HIDS</strong> | Desenvolvido por Salvador Pontes</footer>\n");
+    html.push_str("</div>\n</body>\n</html>\n");
+
+    html
+}
+
+/// Decodifica endereço IPv4 codificado em hexadecimal (ordem little-endian no Linux /proc/net/tcp)
+pub fn parse_ipv4_hex(hex_str: &str) -> Option<String> {
+    if hex_str.len() != 8 {
+        return None;
+    }
+    let b3 = u8::from_str_radix(&hex_str[6..8], 16).ok()?;
+    let b2 = u8::from_str_radix(&hex_str[4..6], 16).ok()?;
+    let b1 = u8::from_str_radix(&hex_str[2..4], 16).ok()?;
+    let b0 = u8::from_str_radix(&hex_str[0..2], 16).ok()?;
+    Some(format!("{}.{}.{}.{}", b3, b2, b1, b0))
+}
+
+/// Decodifica endereço IPv6 codificado em hexadecimal no Linux /proc/net/tcp6
+pub fn parse_ipv6_hex(hex_str: &str) -> Option<String> {
+    if hex_str.len() != 32 {
+        return None;
+    }
+    if hex_str.chars().all(|c| c == '0') {
+        return Some("::".to_string());
+    }
+    let mut bytes = [0u8; 16];
+    for w in 0..4 {
+        let chunk = &hex_str[w * 8..(w + 1) * 8];
+        bytes[w * 4] = u8::from_str_radix(&chunk[6..8], 16).ok()?;
+        bytes[w * 4 + 1] = u8::from_str_radix(&chunk[4..6], 16).ok()?;
+        bytes[w * 4 + 2] = u8::from_str_radix(&chunk[2..4], 16).ok()?;
+        bytes[w * 4 + 3] = u8::from_str_radix(&chunk[0..2], 16).ok()?;
+    }
+    let ip = std::net::Ipv6Addr::from(bytes);
+    Some(ip.to_string())
+}
+
+/// Converte o código de estado TCP do kernel (/proc/net/tcp) para formato textual padrão (ss/netstat)
+pub fn translate_tcp_state(st_hex: &str) -> &'static str {
+    match st_hex {
+        "01" => "ESTABLISHED",
+        "02" => "SYN_SENT",
+        "03" => "SYN_RECV",
+        "04" => "FIN_WAIT1",
+        "05" => "FIN_WAIT2",
+        "06" => "TIME_WAIT",
+        "07" => "CLOSE",
+        "08" => "CLOSE_WAIT",
+        "09" => "LAST_ACK",
+        "0A" => "LISTEN",
+        "0B" => "CLOSING",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Converte o código de estado UDP para formato legível
+pub fn translate_udp_state(st_hex: &str) -> &'static str {
+    match st_hex {
+        "01" => "ESTABLISHED",
+        "07" => "UNCONN",
+        _ => "UNCONN",
+    }
+}
+
+/// Mapeia cada inode de socket ao respetivo processo e PID lendo os descritores em /proc/[pid]/fd
+#[cfg(target_os = "linux")]
+pub fn build_inode_process_map() -> std::collections::HashMap<u64, String> {
+    let mut map = std::collections::HashMap::new();
+    let proc_dir = match std::fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return map,
+    };
+
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let pid_path = entry.path();
+        let comm_path = pid_path.join("comm");
+        let comm = std::fs::read_to_string(&comm_path)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| name_str.to_string());
+
+        let fd_path = pid_path.join("fd");
+        if let Ok(fds) = std::fs::read_dir(fd_path) {
+            for fd_entry in fds.flatten() {
+                if let Ok(link) = std::fs::read_link(fd_entry.path()) {
+                    let link_str = link.to_string_lossy();
+                    if link_str.starts_with("socket:[") && link_str.ends_with(']') {
+                        let inode_str = &link_str[8..link_str.len() - 1];
+                        if let Ok(inode) = inode_str.parse::<u64>() {
+                            map.insert(inode, format!("{} ({})", comm, name_str));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn build_inode_process_map() -> std::collections::HashMap<u64, String> {
+    std::collections::HashMap::new()
+}
+
+/// Obtém a lista atualizada de conexões e sockets ativos no sistema hospedeiro
+pub fn get_active_sockets(trap_ports: &[u16]) -> Vec<SocketInfo> {
+    let mut sockets = Vec::new();
+    let inode_map = build_inode_process_map();
+
+    let files = [
+        ("/proc/net/tcp", "TCP", true),
+        ("/proc/net/tcp6", "TCP6", true),
+        ("/proc/net/udp", "UDP", false),
+        ("/proc/net/udp6", "UDP6", false),
+    ];
+
+    for (file_path, proto, is_tcp) in files {
+        if let Ok(content) = std::fs::read_to_string(file_path) {
+            for line in content.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 10 {
+                    continue;
+                }
+
+                let local_parts: Vec<&str> = parts[1].split(':').collect();
+                let rem_parts: Vec<&str> = parts[2].split(':').collect();
+                if local_parts.len() != 2 || rem_parts.len() != 2 {
+                    continue;
+                }
+
+                let local_ip = if proto.ends_with('6') {
+                    parse_ipv6_hex(local_parts[0]).unwrap_or_else(|| local_parts[0].to_string())
+                } else {
+                    parse_ipv4_hex(local_parts[0]).unwrap_or_else(|| local_parts[0].to_string())
+                };
+
+                let local_port = u16::from_str_radix(local_parts[1], 16).unwrap_or(0);
+
+                let foreign_ip = if proto.ends_with('6') {
+                    parse_ipv6_hex(rem_parts[0]).unwrap_or_else(|| rem_parts[0].to_string())
+                } else {
+                    parse_ipv4_hex(rem_parts[0]).unwrap_or_else(|| rem_parts[0].to_string())
+                };
+
+                let foreign_port = u16::from_str_radix(rem_parts[1], 16).unwrap_or(0);
+
+                let state = if is_tcp {
+                    translate_tcp_state(parts[3]).to_string()
+                } else {
+                    translate_udp_state(parts[3]).to_string()
+                };
+
+                let inode = parts[9].parse::<u64>().unwrap_or(0);
+                let pid_process = inode_map.get(&inode).cloned().unwrap_or_else(|| "-".to_string());
+
+                let is_honeypot = trap_ports.contains(&local_port);
+
+                let is_external = if foreign_ip != "0.0.0.0" && foreign_ip != "::" && foreign_port > 0 {
+                    if let Ok(parsed_ip) = foreign_ip.parse::<std::net::IpAddr>() {
+                        !is_private_or_local(parsed_ip) && !parsed_ip.is_loopback()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                let local_addr = format!("{}:{}", local_ip, local_port);
+                let foreign_addr = if foreign_port == 0 && (foreign_ip == "0.0.0.0" || foreign_ip == "::") {
+                    "*:*".to_string()
+                } else {
+                    format!("{}:{}", foreign_ip, foreign_port)
+                };
+
+                sockets.push(SocketInfo {
+                    proto: proto.to_string(),
+                    state,
+                    local_addr,
+                    foreign_addr,
+                    pid_process,
+                    is_honeypot,
+                    is_external,
+                });
+            }
+        }
+    }
+
+    // Ordenar: primeiro Honeypots, depois conexões Externas, depois Listeners locais
+    sockets.sort_by(|a, b| {
+        let score_a = if a.is_honeypot { 3 } else if a.is_external { 2 } else if a.state == "LISTEN" { 1 } else { 0 };
+        let score_b = if b.is_honeypot { 3 } else if b.is_external { 2 } else if b.state == "LISTEN" { 1 } else { 0 };
+        score_b.cmp(&score_a).then_with(|| a.local_addr.cmp(&b.local_addr))
+    });
+
+    sockets
 }
 
 /// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
@@ -1530,7 +1932,7 @@ mod tests {
 
         let res = export_threat_report(&incidents, &banned, &whitelisted, &sys_info, Language::Pt);
         assert!(res.is_ok());
-        let (json_file, csv_file, pcap_file, cef_file, syslog_file) = res.unwrap();
+        let (json_file, csv_file, pcap_file, cef_file, syslog_file, md_file, html_file) = res.unwrap();
 
         // Verifica existência e conteúdo dos ficheiros
         assert!(std::path::Path::new(&json_file).exists());
@@ -1538,6 +1940,8 @@ mod tests {
         assert!(std::path::Path::new(&pcap_file).exists());
         assert!(std::path::Path::new(&cef_file).exists());
         assert!(std::path::Path::new(&syslog_file).exists());
+        assert!(std::path::Path::new(&md_file).exists());
+        assert!(std::path::Path::new(&html_file).exists());
 
         let json_content = std::fs::read_to_string(&json_file).unwrap();
         assert!(json_content.contains("192.168.1.150"));
@@ -1558,12 +1962,53 @@ mod tests {
         assert!(syslog_content.contains("sentinela"));
         assert!(syslog_content.contains("src=\"192.168.1.150\""));
 
+        let md_content = std::fs::read_to_string(&md_file).unwrap();
+        assert!(md_content.contains("Relatório Executivo de Incidentes"));
+        assert!(md_content.contains("192.168.1.150"));
+        assert!(md_content.contains("T1110.001"));
+
+        let html_content = std::fs::read_to_string(&html_file).unwrap();
+        assert!(html_content.contains("Sentinela SOC"));
+        assert!(html_content.contains("192.168.1.150"));
+
         // Limpeza dos ficheiros de teste
         let _ = std::fs::remove_file(json_file);
         let _ = std::fs::remove_file(csv_file);
         let _ = std::fs::remove_file(pcap_file);
         let _ = std::fs::remove_file(cef_file);
         let _ = std::fs::remove_file(syslog_file);
+        let _ = std::fs::remove_file(md_file);
+        let _ = std::fs::remove_file(html_file);
+    }
+
+    #[test]
+    fn test_parse_hex_ips_and_socket_states() {
+        assert_eq!(parse_ipv4_hex("0100007F").as_deref(), Some("127.0.0.1"));
+        assert_eq!(parse_ipv4_hex("00000000").as_deref(), Some("0.0.0.0"));
+        assert_eq!(parse_ipv4_hex("C9C814AC").as_deref(), Some("172.20.200.201"));
+        assert_eq!(parse_ipv4_hex("INVALID"), None);
+
+        assert_eq!(parse_ipv6_hex("00000000000000000000000000000000").as_deref(), Some("::"));
+        assert_eq!(parse_ipv6_hex("00000000000000000000000001000000").as_deref(), Some("::1"));
+        assert_eq!(parse_ipv6_hex("SHORT"), None);
+
+        assert_eq!(translate_tcp_state("01"), "ESTABLISHED");
+        assert_eq!(translate_tcp_state("0A"), "LISTEN");
+        assert_eq!(translate_tcp_state("06"), "TIME_WAIT");
+        assert_eq!(translate_udp_state("07"), "UNCONN");
+    }
+
+    #[test]
+    fn test_get_active_sockets() {
+        let trap_ports = [2121, 2222, 8080];
+        let sockets = get_active_sockets(&trap_ports);
+        // Em qualquer máquina Linux a correr o teste, existem sockets abertos
+        assert!(!sockets.is_empty());
+        for s in &sockets {
+            assert!(!s.local_addr.is_empty());
+            assert!(!s.proto.is_empty());
+            assert!(!s.state.is_empty());
+        }
     }
 
     #[tokio::test]
