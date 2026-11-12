@@ -38,18 +38,38 @@ pub fn classify_port(port: u16) -> (&'static str, &'static str) {
     match port {
         20 | 21 | 2121 => ("FTP", "MÉDIO"),
         22 | 2222 => ("SSH", "CRÍTICO"),
-        23 | 2323 => ("Telnet", "CRÍTICO"),
+        23 | 2323 => ("Telnet Decoy", "CRÍTICO"),
         25 => ("SMTP", "MÉDIO"),
         53 => ("DNS", "ALERTA"),
-        80 | 8080 => ("HTTP", "ALERTA"),
+        80 => ("HTTP", "ALERTA"),
+        8080 | 8000 => ("HTTP Web Decoy", "ALERTA"),
         443 | 8443 => ("HTTPS", "ALERTA"),
-        3306 => ("MySQL", "MÉDIO"),
+        3306 => ("MySQL Decoy", "MÉDIO"),
         5432 => ("PostgreSQL", "MÉDIO"),
-        6379 => ("Redis", "CRÍTICO"),
+        6379 => ("Redis Honeypot", "CRÍTICO"),
         27017 => ("MongoDB", "CRÍTICO"),
         3389 => ("RDP", "MÉDIO"),
         _ => ("Custom", "ALERTA"),
     }
+}
+
+/// Gera o banner de autenticação simulado para o decoy Telnet.
+pub fn telnet_decoy_banner() -> &'static [u8] {
+    b"\r\nUser Access Verification\r\n\r\nUsername: "
+}
+
+/// Gera a resposta simulada para comandos Redis enviados ao honeypot.
+pub fn redis_decoy_response(cmd: &str) -> &'static str {
+    if cmd.to_uppercase().starts_with("PING") {
+        "+PONG\r\n"
+    } else {
+        "-NOAUTH Authentication required.\r\n"
+    }
+}
+
+/// Gera o cabeçalho HTTP 401 Unauthorized para o decoy web.
+pub fn http_decoy_response() -> &'static [u8] {
+    b"HTTP/1.1 401 Unauthorized\r\nServer: RouterOS\r\nWWW-Authenticate: Basic realm=\"Admin Console\"\r\nContent-Length: 0\r\n\r\n"
 }
 
 /// Estrutura para enfileirar conexões aceites e processá-las fora do caminho crítico
@@ -223,7 +243,7 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
         }
         23 | 2323 => {
             // Telnet: Envia prompt de login realista
-            let banner = b"\r\nDebian GNU/Linux 12\r\nlogin: ";
+            let banner = telnet_decoy_banner();
             let _ = socket.write_all(banner).await;
             let _ = socket.flush().await;
 
@@ -253,12 +273,12 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
             }
             Some("SMTP: banner enviado".to_string())
         }
-        80 | 8080 => {
+        80 | 8080 | 8000 => {
             // HTTP: O cliente fala primeiro (GET/POST). Lemos o pedido e respondemos 401 Unauthorized
             if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
                 if n > 0 {
                     let req = sanitize_bytes(&buf[..n]);
-                    let resp = b"HTTP/1.1 401 Unauthorized\r\nServer: nginx/1.18.0\r\nContent-Type: text/plain; charset=utf-8\r\nWWW-Authenticate: Basic realm=\"Restricted\"\r\nContent-Length: 17\r\nConnection: close\r\n\r\n401 Unauthorized\n";
+                    let resp = http_decoy_response();
                     let _ = socket.write_all(resp).await;
                     let _ = socket.flush().await;
                     if !req.is_empty() {
@@ -273,7 +293,8 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
             if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
                 if n > 0 {
                     let cmd = sanitize_bytes(&buf[..n]);
-                    let _ = socket.write_all(b"-NOAUTH Authentication required.\r\n").await;
+                    let resp = redis_decoy_response(&cmd);
+                    let _ = socket.write_all(resp.as_bytes()).await;
                     let _ = socket.flush().await;
                     if !cmd.is_empty() {
                         return Some(format!("Redis: {}", cmd));
@@ -452,13 +473,13 @@ mod tests {
         assert_eq!(classify_port(21), ("FTP", "MÉDIO"));
         assert_eq!(classify_port(22), ("SSH", "CRÍTICO"));
         assert_eq!(classify_port(2222), ("SSH", "CRÍTICO"));
-        assert_eq!(classify_port(23), ("Telnet", "CRÍTICO"));
+        assert_eq!(classify_port(23), ("Telnet Decoy", "CRÍTICO"));
         assert_eq!(classify_port(80), ("HTTP", "ALERTA"));
-        assert_eq!(classify_port(8080), ("HTTP", "ALERTA"));
+        assert_eq!(classify_port(8080), ("HTTP Web Decoy", "ALERTA"));
         assert_eq!(classify_port(443), ("HTTPS", "ALERTA"));
-        assert_eq!(classify_port(3306), ("MySQL", "MÉDIO"));
+        assert_eq!(classify_port(3306), ("MySQL Decoy", "MÉDIO"));
         assert_eq!(classify_port(5432), ("PostgreSQL", "MÉDIO"));
-        assert_eq!(classify_port(6379), ("Redis", "CRÍTICO"));
+        assert_eq!(classify_port(6379), ("Redis Honeypot", "CRÍTICO"));
         assert_eq!(classify_port(27017), ("MongoDB", "CRÍTICO"));
         assert_eq!(classify_port(3389), ("RDP", "MÉDIO"));
         assert_eq!(classify_port(9999), ("Custom", "ALERTA"));
@@ -469,6 +490,44 @@ mod tests {
         let name = get_log_filename();
         assert!(name.starts_with("sentinela_"));
         assert!(name.ends_with(".log"));
+    }
+
+    #[test]
+    fn test_classify_expanded_decoy_ports() {
+        assert_eq!(classify_port(23).0, "Telnet Decoy");
+        assert_eq!(classify_port(2323).0, "Telnet Decoy");
+        assert_eq!(classify_port(6379).0, "Redis Honeypot");
+        assert_eq!(classify_port(8080).0, "HTTP Web Decoy");
+        assert_eq!(classify_port(8000).0, "HTTP Web Decoy");
+        assert_eq!(classify_port(3306).0, "MySQL Decoy");
+    }
+
+    #[test]
+    fn test_decoy_response_payloads() {
+        assert_eq!(
+            telnet_decoy_banner(),
+            b"\r\nUser Access Verification\r\n\r\nUsername: "
+        );
+
+        assert_eq!(redis_decoy_response("PING"), "+PONG\r\n");
+        assert_eq!(redis_decoy_response("ping"), "+PONG\r\n");
+        assert_eq!(redis_decoy_response("PING\r\n"), "+PONG\r\n");
+        assert_eq!(redis_decoy_response("INFO"), "-NOAUTH Authentication required.\r\n");
+        assert_eq!(
+            redis_decoy_response("GET flag"),
+            "-NOAUTH Authentication required.\r\n"
+        );
+
+        let http_resp = http_decoy_response();
+        assert_eq!(
+            http_resp,
+            b"HTTP/1.1 401 Unauthorized\r\nServer: RouterOS\r\nWWW-Authenticate: Basic realm=\"Admin Console\"\r\nContent-Length: 0\r\n\r\n"
+        );
+        let http_resp_str = std::str::from_utf8(http_resp).expect("valid utf-8");
+        assert!(http_resp_str.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(http_resp_str.contains("Server: RouterOS\r\n"));
+        assert!(http_resp_str.contains("WWW-Authenticate: Basic realm=\"Admin Console\"\r\n"));
+        assert!(http_resp_str.ends_with("\r\n\r\n"));
     }
 
     #[test]
