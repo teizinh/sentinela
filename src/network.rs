@@ -277,13 +277,48 @@ pub fn is_private_or_local(ip: IpAddr) -> bool {
 pub fn classify_local_ip(ip: IpAddr) -> (String, String, String) {
     match ip {
         IpAddr::V4(v4) => {
-            let octets = v4.octets();
             if v4.is_loopback() {
-                ("Loopback".to_string(), "".to_string(), "Host Interno (127.0.0.1)".to_string())
-            } else if octets[0] == 10 {
-                ("Rede Privada".to_string(), "Classe A (10.0.0.0/8)".to_string(), "Intranet Corporativa / Lab".to_string())
+                return ("Loopback".to_string(), "".to_string(), "Host Interno (127.0.0.1)".to_string());
+            }
+
+            // Tenta correlacionar com as interfaces de rede ativas no anfitrião
+            let target_u32 = u32::from(v4);
+            if let Ok(interfaces) = get_if_addrs() {
+                for iface in interfaces {
+                    if let get_if_addrs::IfAddr::V4(v4_iface) = iface.addr {
+                        if v4_iface.ip.is_loopback() {
+                            continue;
+                        }
+                        let iface_u32 = u32::from(v4_iface.ip);
+                        let mask_u32 = u32::from(v4_iface.netmask);
+                        if mask_u32 > 0 && (target_u32 & mask_u32) == (iface_u32 & mask_u32) {
+                            let iface_name = iface.name.to_lowercase();
+                            let (loc_type, isp_desc) = if iface_name.starts_with("wl") {
+                                ("Rede Wi-Fi (LAN)".to_string(), "Dispositivo na mesma rede Wi-Fi".to_string())
+                            } else if iface_name.starts_with("eth") || iface_name.starts_with("en") {
+                                ("Rede Local (Ethernet)".to_string(), "Dispositivo na mesma rede cabo/LAN".to_string())
+                            } else if iface_name.starts_with("tailscale") || iface_name.starts_with("tun") {
+                                ("Rede VPN (Tailscale)".to_string(), "Dispositivo na tua rede VPN".to_string())
+                            } else if iface_name.starts_with("docker") || iface_name.starts_with("br-") {
+                                ("Rede Docker (Container)".to_string(), "Container Docker Local".to_string())
+                            } else {
+                                ("Rede Local (LAN)".to_string(), format!("Interface {}", iface.name))
+                            };
+                            return (loc_type, format!("Sub-rede {}", iface.name), isp_desc);
+                        }
+                    }
+                }
+            }
+
+            let octets = v4.octets();
+            if octets[0] == 10 {
+                ("Rede Privada".to_string(), "Classe A (10.0.0.0/8)".to_string(), "Dispositivo LAN / Intranet".to_string())
             } else if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-                ("Rede Privada".to_string(), "Classe B (172.16.0.0/12)".to_string(), "Sub-rede / Docker / VPN".to_string())
+                if octets[1] == 17 {
+                    ("Rede Docker / Bridge".to_string(), "172.17.0.0/16".to_string(), "Container Interno".to_string())
+                } else {
+                    ("Rede Wi-Fi / Privada".to_string(), "Classe B (172.16.0.0/12)".to_string(), "Dispositivo Wi-Fi / Campus".to_string())
+                }
             } else if octets[0] == 192 && octets[1] == 168 {
                 ("Rede Local (LAN)".to_string(), "Classe C (192.168.0.0/16)".to_string(), "Router / Dispositivo LAN".to_string())
             } else if octets[0] == 100 && (64..=127).contains(&octets[1]) {
@@ -2276,6 +2311,10 @@ mod tests {
 
         let (country, _, _) = classify_local_ip("127.0.0.1".parse().unwrap());
         assert_eq!(country, "Loopback");
+
+        let (country, _, isp) = classify_local_ip("172.20.200.174".parse().unwrap());
+        assert!(country.contains("Wi-Fi") || country.contains("Rede"));
+        assert!(isp.contains("Wi-Fi") || isp.contains("Campus") || isp.contains("Dispositivo"));
     }
 
     #[cfg(target_os = "linux")]

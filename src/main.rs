@@ -199,9 +199,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .any(|a| a == "-k" || a == "--kill-existing" || a == "--replace");
 
+    let test_mode = env::var_os("SENTINELA_TEST_MODE").is_some() || raw_args.iter().any(|a| a == "--test-mode");
+
     // Deteção de instâncias concorrentes do Sentinela
     let other_instances = network::find_other_sentinela_instances();
-    if !other_instances.is_empty() {
+    if !other_instances.is_empty() && !test_mode {
         let pids_str = other_instances
             .iter()
             .map(|p| p.to_string())

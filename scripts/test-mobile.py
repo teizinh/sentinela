@@ -18,7 +18,8 @@ for width, height in [(20, 10), (32, 16), (40, 24), (69, 24), (80, 24), (120, 40
     original = termios.tcgetattr(slave)
     with tempfile.TemporaryDirectory(prefix="sentinela-pty-") as directory:
         environment = dict(os.environ, TERM="xterm-256color",
-                           SSH_CONNECTION="192.0.2.1 54321 192.0.2.2 22")
+                           SSH_CONNECTION="192.0.2.1 54321 192.0.2.2 22",
+                           SENTINELA_TEST_MODE="1")
         process = subprocess.Popen([binary, "--simulate", "0"], cwd=directory,
                                    stdin=slave, stdout=slave, stderr=slave,
                                    env=environment)
