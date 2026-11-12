@@ -94,6 +94,18 @@ pub struct Incident {
     pub hit_count: usize,
 }
 
+impl Incident {
+    /// The UI and keyboard actions must operate on the same filtered records.
+    pub fn matches_filter(&self, severity: SeverityFilter, query: &str) -> bool {
+        severity.matches(&self.severity)
+            && (query.is_empty()
+                || self.ip.to_lowercase().contains(query)
+                || self.service.to_lowercase().contains(query)
+                || self.port.to_string().starts_with(query)
+                || self.severity.to_lowercase().contains(query))
+    }
+}
+
 /// Calcula uma pontuação de perigo (0 a 100) para priorização e triagem no SOC
 pub fn calculate_threat_score(severity: &str, hit_count: usize, has_payload: bool) -> u8 {
     let base = match severity {
@@ -347,6 +359,30 @@ pub fn format_hexdump(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_and_severity_select_the_same_records() {
+        let incident = Incident {
+            timestamp: String::new(),
+            ip: "2001:db8::1".into(),
+            port: 2222,
+            service: "SSH Honeypot".into(),
+            severity: "MÉDIO".into(),
+            country: String::new(),
+            city: String::new(),
+            isp: String::new(),
+            rdns: None,
+            payload: None,
+            threat_score: 40,
+            hit_count: 1,
+        };
+        for query in ["", "ssh", "2001:db8", "22", "médio"] {
+            assert!(incident.matches_filter(SeverityFilter::All, query));
+        }
+        assert!(!incident.matches_filter(SeverityFilter::All, "http"));
+        assert!(!incident.matches_filter(SeverityFilter::CriticalOnly, "ssh"));
+    }
+
 
     #[test]
     fn test_severity_filter_cycle() {

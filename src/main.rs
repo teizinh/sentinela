@@ -17,10 +17,17 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     error::Error,
-    io,
+    io::{self, IsTerminal},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+
+struct TerminalGuard;
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
 
 fn restore_terminal() {
     let _ = disable_raw_mode();
@@ -115,7 +122,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let simulate_on_startup = raw_args.iter().any(|a| a == "--simulate" || a == "--test-mode");
 
+    let ssh_session = env::var_os("SSH_CONNECTION").is_some() || env::var_os("SSH_TTY").is_some();
     let mut whitelisted_ips: HashSet<String> = HashSet::new();
+    // Never auto-ban the address carrying the current SSH session.
+    if let Ok(connection) = env::var("SSH_CONNECTION") {
+        if let Some(peer) = connection.split_whitespace().next() {
+            if peer.parse::<std::net::IpAddr>().is_ok() {
+                whitelisted_ips.insert(peer.to_owned());
+            }
+        }
+    }
     for ip in &file_config.security.whitelist {
         let clean = ip.trim();
         if !clean.is_empty() {
@@ -174,6 +190,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         traps::DEFAULT_TRAP_PORTS.to_vec()
     };
 
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err("O dashboard requer um terminal: usa ssh -t host sentinela".into());
+    }
+
     let (tx, mut rx) = mpsc::unbounded_channel::<Incident>();
 
     traps::init_logger().await;
@@ -192,6 +212,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let scanner_active = scanner::start_packet_scanner(tx.clone(), trap_ports.clone());
 
     enable_raw_mode()?;
+    let _terminal_guard = TerminalGuard;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
@@ -286,12 +307,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut port_stats: HashMap<u16, usize> = HashMap::new();
     let mut severity_stats: HashMap<String, usize> = HashMap::new();
 
-    // Garante limpeza preventiva de quaisquer regras de firewall residuais no arranque (Linux)
-    #[cfg(target_os = "linux")]
-    {
-        network::cleanup_firewall_rules();
-    }
-
     loop {
         // Verifica se recebeu SIGINT (Ctrl+C) em segundo plano
         if sigint_rx.try_recv().is_ok() {
@@ -329,12 +344,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             recent_interval_events += 1;
 
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
-            network::send_desktop_alert(&incident);
+            if file_config.alerts.desktop_notifications
+                && env::var_os("SSH_CONNECTION").is_none()
+                && env::var_os("SSH_TTY").is_none()
+            {
+                network::send_desktop_alert(&incident);
+            }
 
             // Bloqueio automático de atacantes de alto risco quando auto-ban estiver ativo
             let mut was_auto_banned = false;
             let is_whitelisted = whitelisted_ips.contains(&incident.ip);
-            if auto_ban && !is_whitelisted && (incident.threat_score >= 80 || incident.severity == "SWEEP") {
+            if auto_ban && !is_whitelisted && (incident.threat_score >= file_config.security.threat_threshold || incident.severity == "SWEEP") {
                 let is_host = incident
                     .ip
                     .parse::<std::net::IpAddr>()
@@ -397,11 +417,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Calcula a lista filtrada para passar à UI e para gerir scroll
+        let search_clean = search_query.trim().to_lowercase();
         let filtered_incidents: Vec<&Incident> = incidents
             .iter()
-            .filter(|i| severity_filter.matches(&i.severity))
+            .filter(|i| i.matches_filter(severity_filter, &search_clean))
             .collect();
         let filtered_count = filtered_incidents.len();
+        scroll_offset = scroll_offset.min(filtered_count.saturating_sub(1));
 
         let selected_incident: Option<&Incident> = if filtered_count > 0 {
             filtered_incidents.get(scroll_offset).copied()
@@ -466,7 +488,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             ui::render_ui(f, &ui_ctx);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -491,9 +513,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                         KeyCode::Backspace => {
                             search_query.pop();
+                            scroll_offset = 0;
                         }
                         KeyCode::Char(c) => {
                             search_query.push(c);
+                            scroll_offset = 0;
                         }
                         _ => {}
                     }
@@ -827,6 +851,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 Language::Pt => Language::En,
                                 Language::En => Language::Pt,
                             };
+                        }
+                        KeyCode::Char('k' | 'K') if ssh_session => {
+                            toast_message = Some(("SSH: killswitch desativado para preservar a ligação".into(), Instant::now()));
                         }
                         KeyCode::Char('k' | 'K') => {
                             let target = !killswitch_active;

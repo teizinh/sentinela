@@ -1,3 +1,30 @@
+## Este fork: SSH e telemóvel
+
+Compila com `cargo build --release --locked`. No telemóvel, liga ao computador
+com `ssh -t utilizador@servidor sentinela` (ou abre uma sessão SSH e executa
+`sentinela`). O programa corre no servidor; não requer instalação no telemóvel.
+Para manter a sessão quando a ligação cai, executa-o dentro de `tmux`.
+
+As colunas adaptam-se ao espaço disponível e os textos longos deslocam-se
+automaticamente com pausas para leitura. Usa `j/n` e `p` para navegar,
+`Enter` para os detalhes, `/` para pesquisar e `q` para sair.
+Em repouso, a atualização faz quatro ciclos por segundo para reduzir trabalho
+e tráfego em ligações SSH.
+
+Em SSH, as notificações desktop ficam desligadas, o endereço do cliente
+entra na whitelist inicial de auto-ban e o killswitch fica indisponível para
+evitar cortar a ligação. Isto não substitui acesso de recuperação ao servidor.
+A reposição do terminal funciona na saída normal, nos erros propagados e nos
+panics com unwinding; SIGKILL, falhas de energia e perda da ligação não permitem
+garantias de limpeza. Se necessário, usa `reset` após voltar a ligar.
+
+O marquee usa um percurso linear do texto, a tabela só prepara as linhas
+visíveis e o binário release usa thin LTO e remoção de símbolos.
+Não há garantia de ser o mais rápido do mundo nem de compatibilidade com todos
+os terminais. A largura de emojis depende também do emulador e da fonte.
+
+---
+
 # Sentinela
 
 <p align="center">

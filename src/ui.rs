@@ -71,25 +71,15 @@ pub fn marquee_scroll(text: &str, max_width: usize, tick: u64) -> String {
         return text.to_string();
     }
 
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return String::new();
-    }
-
-    // Determina o índice de início máximo para o qual o sufixo ainda cabe na largura da coluna
+    // One pass instead of repeatedly measuring every suffix (O(n²)).
+    let mut remaining = total_width;
     let mut max_start_idx = 0;
-    for i in 0..chars.len() {
-        let suffix_width: usize = chars[i..]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(1))
-            .sum();
-        if suffix_width <= max_width {
-            max_start_idx = i;
+    for c in text.chars() {
+        if remaining <= max_width {
             break;
         }
-    }
-    if max_start_idx == 0 {
-        max_start_idx = chars.len().saturating_sub(max_width);
+        remaining = remaining.saturating_sub(UnicodeWidthChar::width(c).unwrap_or(0));
+        max_start_idx += 1;
     }
 
     // Configuração dos tempos do marquee:
@@ -116,8 +106,8 @@ pub fn marquee_scroll(text: &str, max_width: usize, tick: u64) -> String {
     // Constrói a janela visível respeitando as larguras em colunas reais do terminal
     let mut result = String::new();
     let mut current_w = 0;
-    for &c in &chars[start_idx..] {
-        let cw = UnicodeWidthChar::width(c).unwrap_or(1);
+    for c in text.chars().skip(start_idx) {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
         if current_w + cw > max_width {
             break;
         }
@@ -153,8 +143,8 @@ pub fn get_table_columns(width: u16, lang: Language) -> (Vec<&'static str>, Vec<
         let c = vec![
             Constraint::Length(8),
             Constraint::Length(6),
-            Constraint::Length(16),
-            Constraint::Min(8),
+            Constraint::Min(1),
+            Constraint::Min(1),
         ];
         (h, c)
     } else if width < 95 {
@@ -210,7 +200,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     let screen_width = f.area().width;
     let screen_height = f.area().height;
     let is_mobile = screen_width < 75;
-    let is_ultra_compact = screen_width < 70;
+    let is_ultra_compact = screen_width.saturating_sub(if screen_width >= 75 && screen_height >= 24 { 2 } else { 0 }) < 70;
 
     let UiContext {
         incidents,
@@ -523,7 +513,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     }
 
     // 2. Tabela com colunas dinâmicas (Mobile Termux / Tablet / Desktop)
-    let (headers_text, col_constraints) = get_table_columns(screen_width, lang);
+    let (headers_text, col_constraints) = get_table_columns(chunks[1].width, lang);
 
     let header_cells = headers_text.into_iter().map(|h| {
         Cell::from(h).style(
@@ -538,24 +528,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     let search_clean = search_query.unwrap_or("").trim().to_lowercase();
     let filtered: Vec<&Incident> = incidents
         .iter()
-        .filter(|i| severity_filter.matches(&i.severity))
-        .filter(|i| {
-            if search_clean.is_empty() {
-                true
-            } else {
-                i.ip.to_lowercase().contains(&search_clean)
-                    || i.service.to_lowercase().contains(&search_clean)
-                    || i.port.to_string().starts_with(&search_clean)
-                    || i.severity.to_lowercase().contains(&search_clean)
-            }
-        })
+        .filter(|i| i.matches_filter(severity_filter, &search_clean))
         .collect();
 
-    let table_inner_w = chunks[1].width.saturating_sub(2) as usize;
-    let ultra_target_w = table_inner_w.saturating_sub(8 + 6 + 16 + 3).max(8);
-    let compact_loc_w = table_inner_w.saturating_sub(8 + 8 + 16 + 15 + 4).max(12);
+    let table_inner_w = chunks[1].width.saturating_sub(2);
+    let columns = Layout::horizontal(col_constraints.clone())
+        .spacing(1)
+        .split(Rect::new(0, 0, table_inner_w, 1));
+    let ultra_ip_w = columns[2].width as usize;
+    let ultra_target_w = columns[3].width as usize;
+    let compact_loc_w = if columns.len() > 4 { columns[4].width as usize } else { 0 };
 
-    let rows = filtered.iter().skip(scroll_offset).enumerate().map(|(idx, item)| {
+    let rows = filtered.iter().skip(scroll_offset).take(chunks[1].height.saturating_sub(4) as usize).enumerate().map(|(idx, item)| {
         let is_selected_row = idx == 0;
         let is_banned = banned_ips.contains(&item.ip);
         let is_whitelisted = whitelisted_ips.contains(&item.ip);
@@ -568,7 +552,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             _ => Color::Cyan,
         };
 
-        let time_str = if screen_width < 95 {
+        let time_str = if chunks[1].width < 95 {
             extract_time_str(item.timestamp.as_str())
         } else {
             item.timestamp.as_str()
@@ -613,7 +597,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         };
 
         let cells = if is_ultra_compact {
-            let ip_scrolled = marquee_scroll(&ip_display, 16, animation_tick.wrapping_add(idx as u64 * 2));
+            let ip_scrolled = marquee_scroll(&ip_display, ultra_ip_w, animation_tick.wrapping_add(idx as u64 * 2));
             let target_scrolled = marquee_scroll(&target_str, ultra_target_w, animation_tick.wrapping_add(idx as u64 * 2 + 1));
             vec![
                 Cell::from(time_str),
@@ -622,8 +606,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 Cell::from(ip_scrolled).style(ip_style),
                 Cell::from(target_scrolled),
             ]
-        } else if screen_width < 95 {
-            let ip_scrolled = marquee_scroll(&ip_display, 16, animation_tick.wrapping_add(idx as u64 * 2));
+        } else if chunks[1].width < 95 {
+            let ip_scrolled = marquee_scroll(&ip_display, ultra_ip_w, animation_tick.wrapping_add(idx as u64 * 2));
             let target_scrolled = marquee_scroll(&target_str, 15, animation_tick.wrapping_add(idx as u64 * 2 + 1));
             let loc_scrolled = marquee_scroll(&location_str, compact_loc_w, animation_tick.wrapping_add(idx as u64 * 2 + 2));
             vec![
@@ -714,7 +698,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             Language::Pt => " [C]Sock [↵]Raio-X [B]Ban [U]White [T]Tema [/]Busca [O]Porta [M]Met [Q]Sair".to_string(),
             Language::En => " [C]Sock [↵]Inspect [B]Ban [U]White [T]Theme [/]Search [O]Port [M]Met [Q]Quit".to_string(),
         }
-    } else if screen_width < 95 {
+    } else if chunks[1].width < 95 {
         match lang {
             Language::Pt => " [C] Sockets | [↵] Raio-X | [B] Ban | [U] White | [X] Auto | [T] Tema | [/] Busca | [O] Porta | [M] Métricas | [Q] Sair".to_string(),
             Language::En => " [C] Sockets | [↵] Inspect | [B] Ban | [U] White | [X] Auto | [T] Theme | [/] Search | [O] Port | [M] Metrics | [Q] Quit".to_string(),
@@ -1510,6 +1494,18 @@ mod tests {
         assert!(mobile.contains(env!("CARGO_PKG_VERSION")));
         assert!(desktop.contains("SOC"));
         assert!(desktop.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn marquee_wide_unicode_stays_inside_terminal_cells() {
+        for text in ["界界abc", "ação e rede", "a\u{301}bcdef", "🔒 IPv6 ::1"] {
+            for width in 0..12 {
+                for tick in 0..60 {
+                    let output = marquee_scroll(text, width, tick);
+                    assert!(UnicodeWidthStr::width(output.as_str()) <= width);
+                }
+            }
+        }
     }
 
     #[test]
