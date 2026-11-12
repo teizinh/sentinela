@@ -51,12 +51,12 @@ It does not require a separate server, database or cloud account. It runs as a s
 
 **Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/teizinh/sentinela/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SirEntr0pyy/sentimela/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/SirEntr0pyy/sentimela/main/scripts/install.ps1 | iex
 ```
 
 ### Pre-built packages
@@ -66,10 +66,13 @@ irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1
 | Linux (Debian / Ubuntu / Mint) | `.deb` | `sentinela-linux-x86_64.deb` |
 | Linux (Fedora / RHEL / openSUSE) | `.rpm` | `sentinela-linux-x86_64.rpm` |
 | Linux (universal) | `.tar.gz` | `sentinela-linux-x86_64.tar.gz` |
+| Linux ARM64 | `.deb`, `.tar.gz` | `sentinela-linux-arm64.*` |
+| macOS Intel | `.tar.gz` | `sentinela-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `.tar.gz` | `sentinela-macos-arm64.tar.gz` |
 | Windows | Installer | `sentinela-windows-x64-setup.exe` |
 | Windows | Portable zip | `sentinela-windows-x64.zip` |
 
-All releases are on the [Releases page](https://github.com/teizinh/sentinela/releases). Each file has a corresponding `.sha256` checksum. A combined `SHA256SUMS.txt` is included in every release.
+All releases are on the [Releases page](https://github.com/SirEntr0pyy/sentimela/releases). A combined `SHA256SUMS.txt` is included in every release.
 
 ---
 
@@ -314,3 +317,18 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 *Developed by [teizinh](https://github.com/teizinh)*
+
+
+## Builds and releases for this fork
+
+Every push and pull request runs tests and creates downloadable release-mode
+binaries in Actions for Linux, Windows and macOS. The Check workflow also supports
+manual runs.
+
+For a release, update the package version in Cargo.toml and Cargo.lock, commit,
+then push a matching tag (`vX.Y.Z`). Release Sentinela tests and packages Linux
+x86_64 / ARM64, macOS Intel / Apple Silicon and Windows x64. It publishes the
+packages and a verified SHA256SUMS.txt only after every build succeeds.
+You can also run it manually with an existing tag or publish a GitHub release.
+The workflow checks out that tag and rejects a tag that differs from Cargo.toml.
+Manual runs are available under Actions → Release Sentinela → Run workflow.

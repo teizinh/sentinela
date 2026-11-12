@@ -1,13 +1,13 @@
 #!/usr/bin/env sh
 # ==============================================================================
 # Sentinela HIDS - Script de Instalação Automatizado (Linux & macOS)
-# Repositório: https://github.com/teizinh/sentinela
+# Repositório: https://github.com/SirEntr0pyy/sentimela
 # Licença: MIT
 # ==============================================================================
 
 set -e
 
-REPO="teizinh/sentinela"
+REPO="SirEntr0pyy/sentimela"
 BINARY_NAME="sentinela"
 
 # Cores para o terminal (compatível com POSIX sh e dash)

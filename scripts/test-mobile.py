@@ -11,7 +11,7 @@ import tempfile
 import termios
 import time
 
-binary = str(Path(__file__).resolve().parents[1] / "target/release/sentinela")
+binary = os.environ.get("SENTINELA_TEST_BINARY", str(Path(__file__).resolve().parents[1] / "target/release/sentinela"))
 for width, height in [(20, 10), (32, 16), (40, 24), (69, 24), (80, 24), (120, 40)]:
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, width, 0, 0))

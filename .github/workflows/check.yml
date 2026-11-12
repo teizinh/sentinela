@@ -2,19 +2,29 @@ name: Check
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   test:
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+      - run: cargo build --release --locked
       - if: runner.os == 'Linux'
-        run: |
-          cargo build --release --locked
-          python3 scripts/test-mobile.py
+        run: python3 scripts/test-mobile.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sentinela-${{ runner.os }}-${{ runner.arch }}
+          if-no-files-found: error
+          path: |
+            target/release/sentinela
+            target/release/sentinela.exe

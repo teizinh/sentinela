@@ -1,6 +1,6 @@
 # ==============================================================================
 # Sentinela HIDS - Script de Instalação Automatizado para Windows
-# Repositório: https://github.com/teizinh/sentinela
+# Repositório: https://github.com/SirEntr0pyy/sentimela
 # Licença: MIT
 # ==============================================================================
 
@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "teizinh/sentinela"
+$Repo = "SirEntr0pyy/sentimela"
 $BinaryName = "sentinela.exe"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\Sentinela"
 $TargetBin = Join-Path $InstallDir $BinaryName
