@@ -1,6 +1,7 @@
 mod canary;
 mod config;
 pub mod credentials;
+pub mod dns_analyzer;
 pub mod icmp;
 pub mod mitigation;
 mod models;
