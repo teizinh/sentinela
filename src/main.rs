@@ -6,6 +6,7 @@ pub mod mitigation;
 mod models;
 mod network;
 mod pcap;
+pub mod reputation;
 mod scanner;
 mod traps;
 mod ui;
