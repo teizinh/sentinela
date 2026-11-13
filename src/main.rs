@@ -1,3 +1,4 @@
+pub mod arp_guard;
 mod canary;
 mod config;
 pub mod credentials;
