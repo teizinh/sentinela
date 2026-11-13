@@ -2,9 +2,20 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
+pub type Config = SentinelaConfig;
+
+fn default_ban_duration() -> u64 {
+    600
+}
+
 /// Estrutura de configuração principal do Sentinela
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SentinelaConfig {
+    #[serde(default)]
+    pub auto_ban: bool,
+    #[serde(default = "default_ban_duration")]
+    pub ban_duration_secs: u64,
     #[serde(default)]
     pub traps: TrapsConfig,
     #[serde(default)]
@@ -13,6 +24,19 @@ pub struct SentinelaConfig {
     pub alerts: AlertsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+}
+
+impl Default for SentinelaConfig {
+    fn default() -> Self {
+        Self {
+            auto_ban: false,
+            ban_duration_secs: default_ban_duration(),
+            traps: TrapsConfig::default(),
+            security: SecurityConfig::default(),
+            alerts: AlertsConfig::default(),
+            ui: UiConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -37,6 +61,8 @@ fn default_ports() -> Vec<u16> {
 pub struct SecurityConfig {
     #[serde(default)]
     pub auto_ban: bool,
+    #[serde(default = "default_ban_duration")]
+    pub ban_duration_secs: u64,
     #[serde(default = "default_threat_threshold")]
     pub threat_threshold: u8,
     #[serde(default)]
@@ -47,6 +73,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             auto_ban: false,
+            ban_duration_secs: default_ban_duration(),
             threat_threshold: default_threat_threshold(),
             whitelist: Vec::new(),
         }
@@ -126,8 +153,18 @@ pub fn load_config(custom_path: Option<&str>) -> Result<(SentinelaConfig, Option
     if let Some(path) = find_config_path(custom_path) {
         let content = fs::read_to_string(&path)
             .map_err(|e| format!("Não foi possível ler {}: {}", path.display(), e))?;
-        let config: SentinelaConfig = toml::from_str(&content)
+        let mut config: SentinelaConfig = toml::from_str(&content)
             .map_err(|e| format!("Erro de sintaxe TOML em {}: {}", path.display(), e))?;
+        if config.auto_ban {
+            config.security.auto_ban = true;
+        } else if config.security.auto_ban {
+            config.auto_ban = true;
+        }
+        if config.ban_duration_secs != default_ban_duration() {
+            config.security.ban_duration_secs = config.ban_duration_secs;
+        } else if config.security.ban_duration_secs != default_ban_duration() {
+            config.ban_duration_secs = config.security.ban_duration_secs;
+        }
         Ok((config, Some(path)))
     } else {
         Ok((SentinelaConfig::default(), None))
@@ -142,6 +179,12 @@ pub fn generate_default_config_file(target_path: &Path) -> Result<(), std::io::E
 # Este ficheiro pode ser colocado no diretório atual (sentinela.toml)
 # ou em ~/.config/sentinela/config.toml
 
+# Ativação do bloqueio automático no firewall (iptables/nftables)
+auto_ban = false
+
+# Duração do bloqueio temporário em segundos (padrão: 600 segundos / 10 minutos)
+ban_duration_secs = 600
+
 [traps]
 # Lista de portas TCP para escuta de armadilhas honeypot interativas
 ports = [2121, 2222, 2323, 8080, 8443]
@@ -149,6 +192,9 @@ ports = [2121, 2222, 2323, 8080, 8443]
 [security]
 # Bloqueio automático de atacantes de alto risco no firewall (iptables/nftables)
 auto_ban = false
+
+# Duração do bloqueio temporário em segundos (padrão: 600 segundos / 10 minutos)
+ban_duration_secs = 600
 
 # Limiar de pontuação de ameaça para acionar auto-ban (0-100)
 threat_threshold = 80
@@ -190,10 +236,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_config_auto_ban_defaults() {
+        let cfg = SentinelaConfig::default();
+        assert!(!cfg.auto_ban);
+        assert_eq!(cfg.ban_duration_secs, 600);
+        assert!(!cfg.security.auto_ban);
+        assert_eq!(cfg.security.ban_duration_secs, 600);
+
+        let config = Config::default();
+        assert!(!config.auto_ban);
+        assert_eq!(config.ban_duration_secs, 600);
+        assert!(!config.security.auto_ban);
+        assert_eq!(config.security.ban_duration_secs, 600);
+    }
+
+    #[test]
     fn test_default_config_values() {
         let cfg = SentinelaConfig::default();
         assert_eq!(cfg.traps.ports, vec![2121, 2222, 2323, 8080, 8443]);
+        assert!(!cfg.auto_ban);
+        assert_eq!(cfg.ban_duration_secs, 600);
         assert!(!cfg.security.auto_ban);
+        assert_eq!(cfg.security.ban_duration_secs, 600);
         assert_eq!(cfg.security.threat_threshold, 80);
         assert_eq!(cfg.ui.theme, "cyber");
         assert_eq!(cfg.ui.language, "pt");
@@ -202,11 +266,15 @@ mod tests {
     #[test]
     fn test_parse_toml_string() {
         let toml_str = r#"
+            auto_ban = true
+            ban_duration_secs = 300
+
             [traps]
             ports = [2222, 9000]
 
             [security]
             auto_ban = true
+            ban_duration_secs = 300
             threat_threshold = 75
             whitelist = ["10.0.0.1", "10.0.0.2"]
 
@@ -221,7 +289,10 @@ mod tests {
 
         let parsed: SentinelaConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(parsed.traps.ports, vec![2222, 9000]);
+        assert!(parsed.auto_ban);
+        assert_eq!(parsed.ban_duration_secs, 300);
         assert!(parsed.security.auto_ban);
+        assert_eq!(parsed.security.ban_duration_secs, 300);
         assert_eq!(parsed.security.threat_threshold, 75);
         assert_eq!(parsed.security.whitelist, vec!["10.0.0.1", "10.0.0.2"]);
         assert_eq!(parsed.alerts.webhook_url.as_deref(), Some("https://example.com/webhook"));
@@ -239,6 +310,13 @@ mod tests {
         assert!(content.contains("[traps]"));
         assert!(content.contains("ports = [2121, 2222, 2323, 8080, 8443]"));
         assert!(content.contains("[security]"));
+        assert!(content.contains("auto_ban = false"));
+        assert!(content.contains("ban_duration_secs = 600"));
+        let parsed: SentinelaConfig = toml::from_str(&content).unwrap();
+        assert!(!parsed.auto_ban);
+        assert_eq!(parsed.ban_duration_secs, 600);
+        assert!(!parsed.security.auto_ban);
+        assert_eq!(parsed.security.ban_duration_secs, 600);
         let _ = std::fs::remove_file(target);
     }
 }
