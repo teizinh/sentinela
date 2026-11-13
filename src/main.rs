@@ -7,6 +7,7 @@ mod models;
 mod network;
 mod pcap;
 mod scanner;
+pub mod syn_flood;
 mod traps;
 mod ui;
 
