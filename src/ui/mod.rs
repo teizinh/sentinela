@@ -1,3 +1,5 @@
+pub mod hex_view;
+
 use crate::models::{Incident, Language, PortWarning, SeverityFilter, SocketInfo, SysInfo, Theme};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
