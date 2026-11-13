@@ -2575,7 +2575,8 @@ mod tests {
     fn test_get_active_sockets() {
         let trap_ports = [2121, 2222, 8080];
         let sockets = get_active_sockets(&trap_ports);
-        // Em qualquer máquina Linux a correr o teste, existem sockets abertos
+        // Em máquinas Linux existem sockets abertos; em Windows/macOS o /proc não existe
+        #[cfg(target_os = "linux")]
         assert!(!sockets.is_empty());
         for s in &sockets {
             assert!(!s.local_addr.is_empty());
