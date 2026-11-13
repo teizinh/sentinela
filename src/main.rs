@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         i += 1;
     }
 
-    let (file_config, loaded_config_path) = match config::load_config(custom_config_path.as_deref()) {
+    let (mut config, loaded_config_path) = match config::load_config(custom_config_path.as_deref()) {
         Ok(res) => res,
         Err(e) => {
             eprintln!("\x1b[1;33m[!] Aviso de Configuração: {}\x1b[0m", e);
@@ -99,22 +99,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Opções de linha de comandos: --auto-ban, --webhook <URL>, --whitelist <IPS>, --theme <THEME>, --simulate
-    let auto_ban_cli = raw_args.iter().any(|a| a == "--auto-ban");
-    let mut auto_ban = auto_ban_cli || file_config.security.auto_ban;
+    // Opções de linha de comandos: --auto-ban, -b, --webhook <URL>, --whitelist <IPS>, --theme <THEME>, --simulate
+    let auto_ban_cli = raw_args.iter().any(|a| a == "--auto-ban" || a == "-b");
+    if auto_ban_cli {
+        config.auto_ban = true;
+        config.security.auto_ban = true;
+    }
+    let mut auto_ban = config.auto_ban || config.security.auto_ban;
 
     let mut webhook_url: Option<String> = env::var("SENTINELA_WEBHOOK")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .or(file_config.alerts.webhook_url.clone());
+        .or(config.alerts.webhook_url.clone());
 
     let mut hub_url: Option<String> = env::var("SENTINELA_HUB_URL")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let mut theme = match file_config.ui.theme.to_lowercase().as_str() {
+    let mut theme = match config.ui.theme.to_lowercase().as_str() {
         "matrix" => Theme::Matrix,
         "midnight" => Theme::Midnight,
         "contrast" | "highcontrast" | "high-contrast" => Theme::HighContrast,
@@ -141,7 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    for ip in &file_config.security.whitelist {
+    for ip in &config.security.whitelist {
         let clean = ip.trim();
         if !clean.is_empty() {
             whitelisted_ips.insert(clean.to_string());
@@ -196,8 +200,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut trap_ports: Vec<u16> = if !parsed_ports.is_empty() {
         parsed_ports
-    } else if !file_config.traps.ports.is_empty() {
-        file_config.traps.ports.clone()
+    } else if !config.traps.ports.is_empty() {
+        config.traps.ports.clone()
     } else {
         traps::DEFAULT_TRAP_PORTS.to_vec()
     };
@@ -281,7 +285,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network::send_hub_heartbeat(hub, &node_id, &node_name, &node_ip, env!("CARGO_PKG_VERSION"));
     }
 
-    let mut lang = match file_config.ui.language.to_lowercase().as_str() {
+    let mut lang = match config.ui.language.to_lowercase().as_str() {
         "en" => Language::En,
         _ => network::detect_language(),
     };
@@ -325,7 +329,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_geoip = false;
     let mut sockets_list: Vec<crate::models::SocketInfo> = Vec::new();
     let mut banned_ips: HashSet<String> = HashSet::new();
-    let mut audio_alerts = file_config.alerts.audio_alerts;
+    let mut mitigation_engine = mitigation::MitigationEngine::new();
+    for ip in &whitelisted_ips {
+        mitigation_engine.add_whitelist(ip);
+    }
+    let mut audio_alerts = config.alerts.audio_alerts;
     let mut toast_message: Option<(String, Instant)> = loaded_config_path.map(|p| {
         let msg = match lang {
             Language::Pt => format!("[⚙️] Configuração carregada: {}", p.display()),
@@ -466,6 +474,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             break;
         }
 
+        // Verifica expiração de bans temporários no MitigationEngine
+        let expired_unbans = mitigation_engine.check_unbans(Instant::now());
+        for ip in expired_unbans {
+            let _ = network::unban_ip(&ip);
+            banned_ips.remove(&ip);
+        }
+
         // Amostragem periódica de débito de rede (Throughput TX/RX)
         if last_throughput_sample.elapsed() >= Duration::from_millis(800) {
             let tp = network::sample_network_throughput(&mut throughput_sampler);
@@ -513,7 +528,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             recent_interval_events += 1;
 
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
-            if file_config.alerts.desktop_notifications
+            if config.alerts.desktop_notifications
                 && env::var_os("SSH_CONNECTION").is_none()
                 && env::var_os("SSH_TTY").is_none()
             {
@@ -522,8 +537,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Bloqueio automático de atacantes de alto risco quando auto-ban estiver ativo
             let mut was_auto_banned = false;
-            let is_whitelisted = whitelisted_ips.contains(&incident.ip);
-            if auto_ban && !is_whitelisted && (incident.threat_score >= file_config.security.threat_threshold || incident.severity == "SWEEP") {
+            let is_whitelisted = whitelisted_ips.contains(&incident.ip) || mitigation_engine.is_whitelisted(&incident.ip);
+            let should_ban = mitigation_engine.should_auto_ban(&incident.severity, incident.threat_score)
+                || incident.threat_score >= config.security.threat_threshold
+                || incident.severity == "SWEEP";
+
+            if auto_ban && !is_whitelisted && should_ban {
                 let is_host = incident
                     .ip
                     .parse::<std::net::IpAddr>()
@@ -533,6 +552,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if !banned_ips.contains(&incident.ip) && !is_host {
                     if let Ok(()) = network::ban_ip(&incident.ip) {
                         banned_ips.insert(incident.ip.clone());
+                        let ban_duration = Duration::from_secs(config.ban_duration_secs);
+                        mitigation_engine.ban_ip(&incident.ip, ban_duration, &incident.service);
                         was_auto_banned = true;
                         let toast = match lang {
                             Language::Pt => format!(
@@ -864,6 +885,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     match network::ban_ip(&target_ip) {
                                         Ok(()) => {
                                             banned_ips.insert(target_ip.clone());
+                                            let ban_duration = Duration::from_secs(config.ban_duration_secs);
+                                            mitigation_engine.ban_ip(&target_ip, ban_duration, &inc.service);
                                             toast_message = Some((
                                                 format!("[🚨] IP {} bloqueado com sucesso (DROP)", target_ip),
                                                 Instant::now(),
@@ -889,6 +912,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     toast_message = Some((msg, Instant::now()));
                                 } else {
                                     whitelisted_ips.insert(target_ip.clone());
+                                    mitigation_engine.add_whitelist(&target_ip);
                                     if banned_ips.contains(&target_ip) {
                                         let _ = network::unban_ip(&target_ip);
                                         banned_ips.remove(&target_ip);
@@ -965,6 +989,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     match network::ban_ip(&target_ip) {
                                         Ok(()) => {
                                             banned_ips.insert(target_ip.clone());
+                                            let ban_duration = Duration::from_secs(config.ban_duration_secs);
+                                            mitigation_engine.ban_ip(&target_ip, ban_duration, &inc.service);
                                             toast_message = Some((
                                                 format!("[🚨] IP {} bloqueado com sucesso (DROP)", target_ip),
                                                 Instant::now(),
@@ -990,6 +1016,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     toast_message = Some((msg, Instant::now()));
                                 } else {
                                     whitelisted_ips.insert(target_ip.clone());
+                                    mitigation_engine.add_whitelist(&target_ip);
                                     if banned_ips.contains(&target_ip) {
                                         let _ = network::unban_ip(&target_ip);
                                         banned_ips.remove(&target_ip);
@@ -1124,10 +1151,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // Alternar Auto-Ban (bloqueio automático de atacantes de alto risco)
                         KeyCode::Char('x' | 'X') => {
                             auto_ban = !auto_ban;
+                            config.auto_ban = auto_ban;
+                            config.security.auto_ban = auto_ban;
                             let msg = if auto_ban {
                                 match lang {
-                                    Language::Pt => "[🛡️] Auto-Ban: ATIVADO (Threat Score ≥ 80)",
-                                    Language::En => "[🛡️] Auto-Ban: ENABLED (Threat Score ≥ 80)",
+                                    Language::Pt => "[🛡️] Auto-Ban: ATIVADO (Threat Score ≥ 85 ou CRÍTICO)",
+                                    Language::En => "[🛡️] Auto-Ban: ENABLED (Threat Score ≥ 85 or CRITICAL)",
                                 }
                             } else {
                                 match lang {
@@ -1342,7 +1371,7 @@ fn print_help() {
     println!("  -v, --version     Apresenta a versão do Sentinela");
     println!("  -c, --config <ARQ>Carrega ficheiro de configuração personalizado (sentinela.toml)");
     println!("  --init-config     Gera ficheiro sentinela.toml com definições recomendadas");
-    println!("  --auto-ban        Ativa bloqueio automático no firewall (Threat Score >= 80)");
+    println!("  -b, --auto-ban    Ativa bloqueio automático no firewall (Threat Score >= 85)");
     println!("  --webhook <URL>   Dispara alertas em tempo real para webhook Discord/Slack");
     println!("  --hub <URL>       Agrega e correlaciona telemetria no Sentinela Hub (ex: http://127.0.0.1:8765)");
     println!("  --whitelist <IPS> Lista de IPs confiáveis imunes ao Auto-Ban (ex: 192.168.1.1,10.0.0.1)");

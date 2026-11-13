@@ -128,11 +128,37 @@ impl MitigationEngine {
     pub fn active_bans(&self) -> &[BannedIp] {
         &self.banned_ips
     }
+
+    pub fn should_auto_ban(&self, severity: &str, threat_score: u8) -> bool {
+        let sev = severity.to_uppercase();
+        threat_score >= 85 || sev == "CRÍTICO" || sev == "CRITICO"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_should_auto_ban_criteria() {
+        let engine = MitigationEngine::new();
+
+        // High threat score triggers ban regardless of severity
+        assert!(engine.should_auto_ban("MÉDIO", 85));
+        assert!(engine.should_auto_ban("ALERTA", 90));
+        assert!(engine.should_auto_ban("INFO", 100));
+
+        // Critical severity triggers ban regardless of threat score
+        assert!(engine.should_auto_ban("CRÍTICO", 0));
+        assert!(engine.should_auto_ban("crítico", 50));
+        assert!(engine.should_auto_ban("CRITICO", 10));
+
+        // Low threat score with non-critical severity should NOT ban
+        assert!(!engine.should_auto_ban("MÉDIO", 84));
+        assert!(!engine.should_auto_ban("ALERTA", 70));
+        assert!(!engine.should_auto_ban("BAIXO", 0));
+        assert!(!engine.should_auto_ban("INFO", 20));
+    }
 
     #[test]
     fn test_whitelist_rfc1918_and_loopback() {
