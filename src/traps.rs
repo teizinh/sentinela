@@ -1,3 +1,7 @@
+pub mod web_probes;
+#[allow(unused_imports)]
+pub use web_probes::{ProbeType, WebProbeDetector};
+
 use crate::models::Incident;
 use crate::network::{inspect_ip, resolve_rdns};
 use chrono::Local;
@@ -274,14 +278,22 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
             Some("SMTP: banner enviado".to_string())
         }
         80 | 8080 | 8000 => {
-            // HTTP: O cliente fala primeiro (GET/POST). Lemos o pedido e respondemos 401 Unauthorized
+            // HTTP: O cliente fala primeiro (GET/POST). Lemos o pedido e respondemos com decoy adaptativo
             if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
                 if n > 0 {
                     let req = sanitize_bytes(&buf[..n]);
-                    let resp = http_decoy_response();
-                    let _ = socket.write_all(resp).await;
+                    let probe_opt = WebProbeDetector::inspect_payload(&buf[..n]);
+                    let resp = if let Some(ref probe) = probe_opt {
+                        WebProbeDetector::generate_decoy_response(probe)
+                    } else {
+                        http_decoy_response().to_vec()
+                    };
+                    let _ = socket.write_all(&resp).await;
                     let _ = socket.flush().await;
                     if !req.is_empty() {
+                        if let Some(probe) = probe_opt {
+                            return Some(format!("HTTP [{}]: {}", probe, req));
+                        }
                         return Some(format!("HTTP: {}", req));
                     }
                 }
