@@ -1,3 +1,4 @@
+pub mod killchain;
 pub mod sparkline;
 
 use crate::models::{Incident, Language, PortWarning, SeverityFilter, SocketInfo, SysInfo, Theme};
