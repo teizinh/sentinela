@@ -8,6 +8,7 @@ pub mod mitigation;
 mod models;
 mod network;
 mod pcap;
+pub mod reputation;
 mod scanner;
 pub mod session_recorder;
 pub mod syn_flood;
