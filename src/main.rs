@@ -10,6 +10,7 @@ mod network;
 mod pcap;
 mod scanner;
 pub mod session_recorder;
+pub mod syn_flood;
 mod traps;
 mod ui;
 
