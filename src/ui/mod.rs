@@ -1,3 +1,4 @@
+pub mod hex_view;
 pub mod killchain;
 pub mod sparkline;
 
