@@ -9,6 +9,7 @@ mod models;
 mod network;
 mod pcap;
 mod scanner;
+pub mod session_recorder;
 mod traps;
 mod ui;
 
