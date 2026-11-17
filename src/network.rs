@@ -1614,7 +1614,61 @@ pub fn get_top_talkers(incidents: &[Incident], limit: usize) -> Vec<(String, usi
     list
 }
 
-/// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack e automações HTTP)
+/// Constrói o corpo JSON para notificações webhook (suporta nativamente Gotify com /message ou Discord/Slack/Mattermost)
+pub fn build_webhook_payload(url: &str, inc: &Incident, is_auto_banned: bool) -> serde_json::Value {
+    let title = if is_auto_banned {
+        format!("🛑 [SENTINELA AUTO-BAN] Ameaça Bloqueada: {}", inc.ip)
+    } else {
+        format!("🚨 [SENTINELA ALERTA] Deteção {}: {}", inc.severity, inc.ip)
+    };
+
+    let payload_str = inc.payload.as_deref().unwrap_or("Nenhum");
+    let location_str = if inc.city.is_empty() || inc.city == "?" {
+        inc.country.clone()
+    } else {
+        format!("{}, {}", inc.city, inc.country)
+    };
+
+    if url.contains("/message") {
+        serde_json::json!({
+            "title": title,
+            "message": format!(
+                "Alvo: Porta {} ({})\nThreat Score: {}/100\nOrigem: {} ({})\nPayload: {}",
+                inc.port, inc.service, inc.threat_score, inc.ip, location_str, payload_str
+            ),
+            "priority": if is_auto_banned { 8 } else { 5 }
+        })
+    } else {
+        let color = match inc.severity.as_str() {
+            "CRÍTICO" => 0xE74C3C, // Vermelho vivo
+            "SWEEP" => 0xE67E22,   // Laranja
+            "MÉDIO" => 0xF1C40F,   // Amarelo
+            _ => 0x3498DB,         // Azul
+        };
+
+        serde_json::json!({
+            "username": "Sentinela SOC",
+            "embeds": [{
+                "title": title,
+                "color": color,
+                "fields": [
+                    {"name": "IP Origem", "value": inc.ip, "inline": true},
+                    {"name": "Localização", "value": location_str, "inline": true},
+                    {"name": "Alvo", "value": format!("Porta {} ({})", inc.port, inc.service), "inline": true},
+                    {"name": "Threat Score", "value": format!("{}/100", inc.threat_score), "inline": true},
+                    {"name": "Hits Sessão", "value": inc.hit_count.to_string(), "inline": true},
+                    {"name": "ISP / Rede", "value": inc.isp, "inline": true},
+                    {"name": "Payload Capturado", "value": format!("`{}`", payload_str), "inline": false}
+                ],
+                "footer": {
+                    "text": format!("Sentinela v{} • {}", env!("CARGO_PKG_VERSION"), inc.timestamp)
+                }
+            }]
+        })
+    }
+}
+
+/// Dispara uma notificação assíncrona para um webhook (compatível com Discord, Slack, Gotify e automações HTTP)
 pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned: bool) {
     let url = webhook_url.trim().to_string();
     if url.is_empty() {
@@ -1628,47 +1682,7 @@ pub fn send_webhook_alert(webhook_url: &str, incident: &Incident, is_auto_banned
             .build();
 
         if let Ok(client) = client {
-            let title = if is_auto_banned {
-                format!("🛑 [SENTINELA AUTO-BAN] Ameaça Bloqueada: {}", inc.ip)
-            } else {
-                format!("🚨 [SENTINELA ALERTA] Deteção {}: {}", inc.severity, inc.ip)
-            };
-
-            let color = match inc.severity.as_str() {
-                "CRÍTICO" => 0xE74C3C, // Vermelho vivo
-                "SWEEP" => 0xE67E22,   // Laranja
-                "MÉDIO" => 0xF1C40F,   // Amarelo
-                _ => 0x3498DB,         // Azul
-            };
-
-            let payload_str = inc.payload.as_deref().unwrap_or("Nenhum");
-            let location_str = if inc.city.is_empty() || inc.city == "?" {
-                inc.country.clone()
-            } else {
-                format!("{}, {}", inc.city, inc.country)
-            };
-
-            // Payload padrão com embeds para Discord/Slack/Mattermost
-            let body = serde_json::json!({
-                "username": "Sentinela SOC",
-                "embeds": [{
-                    "title": title,
-                    "color": color,
-                    "fields": [
-                        {"name": "IP Origem", "value": inc.ip, "inline": true},
-                        {"name": "Localização", "value": location_str, "inline": true},
-                        {"name": "Alvo", "value": format!("Porta {} ({})", inc.port, inc.service), "inline": true},
-                        {"name": "Threat Score", "value": format!("{}/100", inc.threat_score), "inline": true},
-                        {"name": "Hits Sessão", "value": inc.hit_count.to_string(), "inline": true},
-                        {"name": "ISP / Rede", "value": inc.isp, "inline": true},
-                        {"name": "Payload Capturado", "value": format!("`{}`", payload_str), "inline": false}
-                    ],
-                    "footer": {
-                        "text": format!("Sentinela v{} • {}", env!("CARGO_PKG_VERSION"), inc.timestamp)
-                    }
-                }]
-            });
-
+            let body = build_webhook_payload(&url, &inc, is_auto_banned);
             let _ = client.post(&url).json(&body).send().await;
         }
     });
@@ -2737,5 +2751,43 @@ mod tests {
             ip_conflicts[0],
             "Possível ARP Poisoning: IP 192.168.1.10 associado a múltiplos MACs: 00:11:22:33:44:55, aa:bb:cc:dd:ee:02"
         );
+    }
+
+    #[test]
+    fn test_build_webhook_payload() {
+        let inc = Incident {
+            timestamp: "2026-11-17 14:00:00".to_string(),
+            ip: "192.168.1.100".to_string(),
+            port: 8080,
+            service: "HTTP-Alt".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "Portugal".to_string(),
+            city: "Porto".to_string(),
+            isp: "Vodafone".to_string(),
+            rdns: None,
+            payload: Some("GET /shell.php".to_string()),
+            threat_score: 95,
+            hit_count: 3,
+        };
+
+        // Gotify webhook (contém /message)
+        let gotify_alert = build_webhook_payload("https://gotify.exemplo.com/message?token=abc", &inc, false);
+        assert_eq!(gotify_alert["title"], "🚨 [SENTINELA ALERTA] Deteção CRÍTICO: 192.168.1.100");
+        assert_eq!(gotify_alert["priority"], 5);
+        assert!(gotify_alert["message"].as_str().unwrap().contains("Alvo: Porta 8080 (HTTP-Alt)"));
+        assert!(gotify_alert["message"].as_str().unwrap().contains("Threat Score: 95/100"));
+        assert!(gotify_alert["message"].as_str().unwrap().contains("Origem: 192.168.1.100 (Porto, Portugal)"));
+        assert!(gotify_alert["message"].as_str().unwrap().contains("Payload: GET /shell.php"));
+
+        // Gotify auto-ban (priority 8)
+        let gotify_ban = build_webhook_payload("https://gotify.exemplo.com/message", &inc, true);
+        assert_eq!(gotify_ban["title"], "🛑 [SENTINELA AUTO-BAN] Ameaça Bloqueada: 192.168.1.100");
+        assert_eq!(gotify_ban["priority"], 8);
+
+        // Discord/Slack webhook (não contém /message)
+        let discord_alert = build_webhook_payload("https://discord.com/api/webhooks/123/xyz", &inc, false);
+        assert_eq!(discord_alert["username"], "Sentinela SOC");
+        assert!(discord_alert["embeds"].is_array());
+        assert_eq!(discord_alert["embeds"][0]["title"], "🚨 [SENTINELA ALERTA] Deteção CRÍTICO: 192.168.1.100");
     }
 }
