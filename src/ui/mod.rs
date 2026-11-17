@@ -438,13 +438,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     } else {
         match lang {
             Language::Pt => format!(
-                " IPs: {} | Log: {} | {}{}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
-                local_ips, log_name, auto_ban_badge, webhook_badge, status_label, traps_status, scanner_label,
+                " IPs: {} | Log: {} | {}{}\n Estado: {} | {} | {}\n CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
+                local_ips, log_name, auto_ban_badge, webhook_badge,
+                status_label, traps_status, scanner_label,
                 crit, med, alrt, scans, filter_label, top_port
             ),
             Language::En => format!(
-                " IPs: {} | Log: {} | {}{}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
-                local_ips, log_name, auto_ban_badge, webhook_badge, status_label, traps_status, scanner_label,
+                " IPs: {} | Log: {} | {}{}\n Status: {} | {} | {}\n CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
+                local_ips, log_name, auto_ban_badge, webhook_badge,
+                status_label, traps_status, scanner_label,
                 crit, med, alrt, scans, filter_label, top_port
             ),
         }
@@ -493,9 +495,15 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!("Rede: {}", throughput_str)
         };
 
+        let short_distro = sys_info
+            .distro
+            .replace(" (KDE Plasma Desktop Edition)", " (KDE)")
+            .replace(" Desktop Edition", "")
+            .replace("Linux ", "");
+
         let sys_box_text = format!(
             " SO: {}\n {}\n Arch: {}",
-            sys_info.distro, net_label, sys_info.arch
+            short_distro, net_label, sys_info.arch
         );
         let sys_title = match lang {
             Language::Pt => " Sistema ",

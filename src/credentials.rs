@@ -55,6 +55,32 @@ impl CredentialStore {
     }
 }
 
+/// Logs a captured credential to `passwords_capturadas.log` in user home or current directory.
+pub fn log_captured_credential(ip: &str, service: &str, username: &str, password: Option<&str>) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use chrono::Local;
+
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let pass_str = password.unwrap_or("(sem password)");
+    let log_entry = format!(
+        "[{}] [CREDENCIAL CAPTURADA] IP: {:<15} | Serviço: {:<10} | Utilizador: '{}' | Password: '{}'\n",
+        now, ip, service, username, pass_str
+    );
+
+    let paths = [
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("passwords_capturadas.log")),
+        Some(std::path::PathBuf::from("passwords_capturadas.log")),
+    ];
+
+    for path_opt in paths.iter().flatten() {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path_opt) {
+            let _ = file.write_all(log_entry.as_bytes());
+            break;
+        }
+    }
+}
+
 /// Decodes a standard or URL-safe base64 string without external dependencies.
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let mut output = Vec::with_capacity(input.len() * 3 / 4);

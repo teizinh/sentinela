@@ -195,11 +195,15 @@ pub fn sanitize_bytes(bytes: &[u8]) -> String {
 }
 
 /// Simula diálogos de protocolos em portas comuns para atrair e capturar payloads e assinaturas dos atacantes.
-pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -> Option<String> {
+pub async fn interact_with_probe(
+    mut socket: tokio::net::TcpStream,
+    port: u16,
+    attacker_ip: std::net::IpAddr,
+) -> Option<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::{timeout, Duration};
 
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 2048];
 
     match port {
         22 | 2222 => {
@@ -229,14 +233,22 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
                 if n > 0 {
                     let cmd = sanitize_bytes(&buf[..n]);
                     if cmd.to_uppercase().starts_with("USER") {
+                        let user = cmd.trim_start_matches("USER").trim().to_string();
                         let _ = socket.write_all(b"331 Please specify the password.\r\n").await;
                         let _ = socket.flush().await;
                         let mut pass_buf = [0u8; 256];
                         if let Ok(Ok(pn)) = timeout(Duration::from_millis(500), socket.read(&mut pass_buf)).await {
                             if pn > 0 {
                                 let pass_cmd = sanitize_bytes(&pass_buf[..pn]);
+                                let pass = pass_cmd.trim_start_matches("PASS").trim().to_string();
                                 let _ = socket.write_all(b"530 Login incorrect.\r\n").await;
-                                return Some(format!("FTP: {} | {}", cmd, pass_cmd));
+                                crate::credentials::log_captured_credential(
+                                    &attacker_ip.to_string(),
+                                    "FTP",
+                                    &user,
+                                    Some(&pass),
+                                );
+                                return Some(format!("🔑 CREDENCIAL: User='{}' | Pass='{}' | FTP: {} | {}", user, pass, cmd, pass_cmd));
                             }
                         }
                     }
@@ -255,7 +267,13 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
                 if n > 0 {
                     let login = sanitize_bytes(&buf[..n]);
                     if !login.is_empty() {
-                        return Some(format!("Telnet: login '{}'", login));
+                        crate::credentials::log_captured_credential(
+                            &attacker_ip.to_string(),
+                            "Telnet",
+                            &login,
+                            None,
+                        );
+                        return Some(format!("🔑 CREDENCIAL: User='{}' | Telnet: login '{}'", login, login));
                     }
                 }
             }
@@ -279,7 +297,7 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
         }
         80 | 8080 | 8000 => {
             // HTTP: O cliente fala primeiro (GET/POST). Lemos o pedido e respondemos com decoy adaptativo
-            if let Ok(Ok(n)) = timeout(Duration::from_millis(400), socket.read(&mut buf)).await {
+            if let Ok(Ok(n)) = timeout(Duration::from_millis(500), socket.read(&mut buf)).await {
                 if n > 0 {
                     let req = sanitize_bytes(&buf[..n]);
                     let probe_opt = WebProbeDetector::inspect_payload(&buf[..n]);
@@ -290,6 +308,23 @@ pub async fn interact_with_probe(mut socket: tokio::net::TcpStream, port: u16) -
                     };
                     let _ = socket.write_all(&resp).await;
                     let _ = socket.flush().await;
+
+                    // Captura e registo de Credenciais HTTP (Basic Auth, URL parameters ou JSON body)
+                    let cred_opt = crate::credentials::parse_credential_from_payload("HTTP", &buf[..n]);
+                    if let Some((user, pass_opt)) = cred_opt {
+                        crate::credentials::log_captured_credential(
+                            &attacker_ip.to_string(),
+                            "HTTP",
+                            &user,
+                            pass_opt.as_deref(),
+                        );
+                        let pass_display = pass_opt.unwrap_or_else(|| "(sem pass)".to_string());
+                        return Some(format!(
+                            "🔑 CREDENCIAL: User='{}' | Pass='{}' | Req: {}",
+                            user, pass_display, req
+                        ));
+                    }
+
                     if !req.is_empty() {
                         if let Some(probe) = probe_opt {
                             return Some(format!("HTTP [{}]: {}", probe, req));
@@ -367,7 +402,7 @@ pub async fn spawn_trap_listener(
 
                     // Trata a conexão e executa o diálogo interativo do protocolo da porta
                     tokio::spawn(async move {
-                        let payload = interact_with_probe(socket, port).await;
+                        let payload = interact_with_probe(socket, port, attacker_ip).await;
 
                         let _ = q_tx_clone.send(TrapConnection {
                             attacker_ip,
